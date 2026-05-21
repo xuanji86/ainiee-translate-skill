@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# 项目专有产物（含书籍内容，不入库——保持仓库为通用工具）
+*.glossary.locked.json
+cache.json
+*.cache.json
+/work/
+/output/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# build artifacts
+/dist/

@@ -1,0 +1,14 @@
+[project]
+name = "ainiee-translate"
+version = "0.1.0"
+requires-python = ">=3.12"
+license = "AGPL-3.0-only"
+dependencies = ["msgspec"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"

@@ -1,0 +1,9 @@
+{ "project_id": "x", "files": {}, "extra": { "analysis_v1": {
+  "characters": [
+    {"source": "Captain Marlow", "recommended_translation": "Marlow 舰长", "gender": "M", "note": "船长"},
+    {"source": "James Marlow", "recommended_translation": "James Marlow", "gender": "M", "note": ""},
+    {"source": "Praetor Da'ren", "recommended_translation": "Da'ren 法务官", "gender": "F", "note": ""},
+    {"source": "Praetor Da'ren", "recommended_translation": "Da'ren", "gender": "F", "note": ""}
+  ],
+  "terms": [{"source": "Highmark", "recommended_translation": "Highmark", "category_path": "place", "note": ""}],
+  "non_translate": [{"marker": "<i>", "category": "tag", "note": ""}] } } }

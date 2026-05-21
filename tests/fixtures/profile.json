@@ -1,0 +1,37 @@
+{
+  "source_language": "English",
+  "target_language": "简体中文",
+  "translation_prompt_selection": {
+    "last_selected_id": "p1",
+    "prompt_content": "你是专业译者，人名保留原文，军衔后置于姓名。"
+  },
+  "translation_user_prompt_data": [
+    {"id": "p1", "name": "MyBook", "content": "人名保留原文；军衔后置于姓名。"}
+  ],
+  "writing_style_switch": true,
+  "writing_style_content": "对话简洁直接。",
+  "world_building_switch": false,
+  "world_building_content": "（关闭，不应出现）",
+  "characterization_switch": false,
+  "characterization_data": [],
+  "translation_example_switch": false,
+  "translation_example_data": [],
+  "polishing_prompt_selection": {
+    "last_selected_id": "q1",
+    "prompt_content": "你是资深编辑，把初译润色得更自然，人名保持原文。"
+  },
+  "polishing_user_prompt_data": [
+    {"id": "q1", "name": "MyBook", "content": "润色得更自然。"}
+  ],
+  "polishing_style_switch": true,
+  "polishing_style_content": "命令句简洁有力。",
+  "prompt_dictionary_data": [
+    {"src": "Korin", "dst": "科林", "info": "species"},
+    {"src": "Highmark", "dst": "Highmark", "info": "place"}
+  ],
+  "exclusion_list_switch": true,
+  "exclusion_list_data": [
+    {"markers": "Alpha Centauri III", "info": "place", "regex": false},
+    {"markers": "Duranium", "info": "item", "regex": false}
+  ]
+}
