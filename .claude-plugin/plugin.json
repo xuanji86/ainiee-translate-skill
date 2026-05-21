@@ -1,7 +1,7 @@
 {
   "name": "ainiee-translate",
   "description": "Translate a novel/epub end-to-end on Claude Code itself, AiNiee-style: parse, build a locked glossary, translate chapter by chapter following rules (names preserved, title 3-way, term consistency), optional multi-agent parallel mode, write back and export.",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "author": {
     "name": "Anji Xu",
     "email": "xuanji86@gmail.com"
