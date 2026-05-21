@@ -1,39 +1,39 @@
-"""Read/write our own cache.json (AiNiee CacheProject serialized with msgspec),
-and iterate / mutate items by translation status."""
+"""Read/write our own cache.json (a CacheProject serialized with msgspec), and
+iterate / mutate items by translation status. The CacheProject / CacheItem types
+are vendored from AiNiee under _vendor/ — no external AiNiee repo required."""
 import json
+import types
 import msgspec
 from . import helpers
-from .ainiee_lib import load
+from ._vendor.ModuleFolders.Service.Cache.CacheProject import CacheProject, CacheProjectStatistics
+from ._vendor.ModuleFolders.Service.Cache.CacheItem import CacheItem, TranslationStatus
 
-_M = None
+
 def _m():
-    global _M
-    if _M is None:
-        _M = load()
-    return _M
+    """Back-compat shim: callers used to get these types from ainiee_lib.load()."""
+    return types.SimpleNamespace(
+        CacheProject=CacheProject, CacheItem=CacheItem,
+        CacheProjectStatistics=CacheProjectStatistics, TranslationStatus=TranslationStatus)
 
 
 def save_cache(project, path: str) -> None:
     # Ensure stats_data is never null (its field type is non-Optional in msgspec eyes)
-    m = _m()
     if project.stats_data is None:
-        from ModuleFolders.Service.Cache.CacheProject import CacheProjectStatistics
         project.stats_data = CacheProjectStatistics()
     with open(path, "wb") as w:
         w.write(msgspec.json.encode(project))
 
 
 def load_cache(path: str):
-    m = _m()
     with open(path, "rb") as r:
         content_bytes = r.read()
     try:
-        return msgspec.json.decode(content_bytes, type=m.CacheProject)
+        return msgspec.json.decode(content_bytes, type=CacheProject)
     except msgspec.ValidationError:
         # CacheItem has nullable-but-non-Optional fields (text_to_detect, translated_text);
-        # fall back to CacheProject.from_dict exactly as CacheManager.read_from_file does.
+        # fall back to CacheProject.from_dict exactly as AiNiee's CacheManager does.
         content = json.loads(content_bytes.decode("utf-8"))
-        return m.CacheProject.from_dict(content)
+        return CacheProject.from_dict(content)
 
 
 def iter_items(project):
@@ -49,12 +49,12 @@ def _iter_by_status(project, status):
 
 
 def iter_untranslated(project):
-    return _iter_by_status(project, _m().TranslationStatus.UNTRANSLATED)
+    return _iter_by_status(project, TranslationStatus.UNTRANSLATED)
 
 
 def iter_translated_unpolished(project):
     """Items eligible for a polish pass (and resume): status == TRANSLATED."""
-    return _iter_by_status(project, _m().TranslationStatus.TRANSLATED)
+    return _iter_by_status(project, TranslationStatus.TRANSLATED)
 
 
 def _set(project, text_index: int, text: str, status) -> bool:
@@ -67,13 +67,13 @@ def _set(project, text_index: int, text: str, status) -> bool:
 
 
 def set_translation(project, text_index: int, translated_text: str) -> bool:
-    return _set(project, text_index, translated_text, _m().TranslationStatus.TRANSLATED)
+    return _set(project, text_index, translated_text, TranslationStatus.TRANSLATED)
 
 
 def set_polish(project, text_index: int, polished_text: str) -> bool:
     """Overwrite translated_text with the polished text and mark POLISHED
     (mirrors AiNiee's PolisherTask; export reads final_text == translated_text)."""
-    return _set(project, text_index, polished_text, _m().TranslationStatus.POLISHED)
+    return _set(project, text_index, polished_text, TranslationStatus.POLISHED)
 
 
 def apply_writeback(cache_path: str, items: list[dict], setter, get_text) -> int:

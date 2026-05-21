@@ -2,17 +2,8 @@ import json
 from ainiee_translate import cache_io, batch, polish
 
 
-def _proj(ainiee_repo):
-    from ainiee_translate.ainiee_lib import load
-    m = load()
-    from ModuleFolders.Service.Cache.CacheFile import CacheFile
-    f = CacheFile(storage_path="a.txt")
-    f.items = [m.CacheItem(text_index=i, source_text=f"line {i}") for i in range(1, 4)]
-    return m.CacheProject(project_id="t", files={"a.txt": f})
-
-
-def test_read_translated_returns_only_translated(ainiee_repo, tmp_path):
-    proj = _proj(ainiee_repo)
+def test_read_translated_returns_only_translated(make_project, tmp_path):
+    proj = make_project(n=3, project_id="t")
     cache_io.set_translation(proj, 1, "译1")
     cache_io.set_translation(proj, 2, "译2")
     got = batch.read_translated_batch(proj, size=10)
@@ -20,8 +11,8 @@ def test_read_translated_returns_only_translated(ainiee_repo, tmp_path):
     assert got[0]["translated_text"] == "译1"
 
 
-def test_polish_write_sets_polished_and_resumes(ainiee_repo, tmp_path):
-    proj = _proj(ainiee_repo)
+def test_polish_write_sets_polished_and_resumes(make_project, tmp_path):
+    proj = make_project(n=3, project_id="t")
     cache_io.set_translation(proj, 1, "译1")
     cache_io.set_translation(proj, 2, "译2")
     p = tmp_path / "cache.json"

@@ -1,20 +1,9 @@
 from ainiee_translate import cache_io, project
 
 
-def _proj(ainiee_repo):
-    from ainiee_translate.ainiee_lib import load
-    m = load()
-    from ModuleFolders.Service.Cache.CacheFile import CacheFile
-    f = CacheFile(storage_path="book.epub")
-    f.items = [m.CacheItem(text_index=i, source_text=f"line {i}") for i in range(1, 4)]
-    proj = m.CacheProject(project_id="t", files={"book.epub": f})
-    proj.project_name = "Demo"
-    proj.input_path = "/x/book.epub"
-    return proj
-
-
-def test_import_places_cache_and_summarizes(ainiee_repo, tmp_path):
-    proj = _proj(ainiee_repo)
+def test_import_places_cache_and_summarizes(make_project, tmp_path):
+    proj = make_project(n=3, storage="book.epub", project_id="t",
+                        project_name="Demo", input_path="/x/book.epub")
     cache_io.set_translation(proj, 1, "译1")
     src = tmp_path / "AinieeCacheData.json"
     cache_io.save_cache(proj, str(src))
@@ -30,8 +19,9 @@ def test_import_places_cache_and_summarizes(ainiee_repo, tmp_path):
     assert sum(1 for _ in cache_io.iter_untranslated(proj2)) == 2
 
 
-def test_import_backs_up_existing(ainiee_repo, tmp_path):
-    proj = _proj(ainiee_repo)
+def test_import_backs_up_existing(make_project, tmp_path):
+    proj = make_project(n=3, storage="book.epub", project_id="t",
+                        project_name="Demo", input_path="/x/book.epub")
     src = tmp_path / "AinieeCacheData.json"
     cache_io.save_cache(proj, str(src))
     work = tmp_path / "proj"
@@ -40,8 +30,9 @@ def test_import_backs_up_existing(ainiee_repo, tmp_path):
     assert list((work / "work").glob("cache.json.bak.*"))
 
 
-def test_list_ainiee_scans_dir(ainiee_repo, tmp_path):
-    proj = _proj(ainiee_repo)
+def test_list_ainiee_scans_dir(make_project, tmp_path):
+    proj = make_project(n=3, storage="book.epub", project_id="t",
+                        project_name="Demo", input_path="/x/book.epub")
     pid = "abc123"
     (tmp_path / pid).mkdir()
     cache_io.save_cache(proj, str(tmp_path / pid / "AinieeCacheData.json"))
