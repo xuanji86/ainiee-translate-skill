@@ -1,0 +1,35 @@
+ainiee-translate — _vendor/ NOTICE
+==================================
+
+The files under `_vendor/ModuleFolders/` are vendored (copied) from AiNiee:
+
+    Project : AiNiee
+    Source  : https://github.com/NEKOparapa/AiNiee
+    Commit  : ad937096bcd43ee84468f3ce4c48ff22a1e9eb6a  (2026-05-20)
+    License : GNU AGPL-3.0  (same as this project)
+
+They let ainiee-translate parse and export files (epub, txt, docx, xlsx, …)
+without requiring a separate AiNiee checkout. Vendored verbatim except:
+
+1. Internal imports rewritten from the `ModuleFolders.*` package root to
+   `ainiee_translate._vendor.ModuleFolders.*` (mechanical; re-applied on update).
+
+2. Modified per AGPL §5 (changes marked in-file with an "[ainiee-translate patch]"
+   comment), to drop AiNiee's application framework (PyQt / mediapipe / Config /
+   TaskConfig) so the readers/writers run standalone:
+     - Domain/FileReader/BaseReader.py
+         * dropped the ReaderUtil/mediapipe import; added a small chardet-optional
+           encoding sniff in its place.
+         * post_read_source() made a no-op (removed MediaPipe language detection;
+           the pipeline never uses lang_code).
+     - Domain/FileOutputer/BaseWriter.py
+         * dropped WriterUtil.get_ainiee_config(); output encoding is always UTF-8.
+
+NOT vendored (kept only via the optional AINIEE_REPO fallback, because they pull
+heavy/native deps): BabeldocPdf* (PDF; onnx/OCR) and OfficeConversion* (Windows
+COM). AiNiee's app framework (Base/Config/Log/Infrastructure, FileReader/
+FileOutputer/DirectoryReader/DirectoryWriter/CacheManager, ReaderUtil/WriterUtil)
+is replaced by ainiee_translate/io_dispatch.py.
+
+To update: re-copy the listed files from a new AiNiee commit, re-run the import
+rewrite, re-apply the two patches above, and run the round-trip tests.

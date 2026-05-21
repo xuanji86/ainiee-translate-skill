@@ -4,11 +4,14 @@
 
 ## 安装
 
-**前置依赖（必读）**：解析/导出复用本地 [AiNiee](https://github.com/NEKOparapa/AiNiee) 仓库当库，所以需要一份本地 AiNiee 仓库及其 venv：
+**前置依赖**：本版本**自包含**——解析/导出已内置（`skills/ainiee-translate/scripts/ainiee_translate/_vendor/`，改写自 [AiNiee](https://github.com/NEKOparapa/AiNiee)、剥离其 App 框架），**无需克隆 AiNiee 仓库**。只需一个装了几个轻量库的 Python（≥3.12）：
 
 ```bash
-git clone https://github.com/NEKOparapa/AiNiee.git    # 并按其说明建好 .venv、装好依赖
+python3 -m venv ~/.venvs/ainiee-translate
+~/.venvs/ainiee-translate/bin/pip install msgspec beautifulsoup4 lxml rich openpyxl polib python-pptx chardet
 ```
+
+自带格式：epub / txt / md / docx / xlsx / pptx / csv / srt / vtt / ass / lrc / po / json 系列等。**仅 PDF 与 Windows Office 转换未自包含**——要用时设 `AINIEE_REPO` 回退到 AiNiee。安装技能后设 `SKILL_DIR`（技能目录）与 `AINIEE_PY`（上面 venv 的 python）即可。
 
 ### 方式一：作为 Claude Code 插件安装（推荐）
 

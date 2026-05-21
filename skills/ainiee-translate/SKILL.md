@@ -24,43 +24,45 @@ parse → 构建锁定词汇表 → 逐章翻译（agent 按规则） → 写回
 
 ## 前置依赖与安装（重要）
 
-`parse` 和 `export` 模块内部调用 AiNiee 的 `FileReader` / `FileOutputer`，需要 AiNiee 的运行时依赖（如 `msgspec`、epub 解析库等）。**因此必须使用 AiNiee 的 venv，不能用独立的空 venv。**
+`parse`/`export` 现在**自包含**：解析/导出模块随技能打包在 `scripts/ainiee_translate/_vendor/` 下（改写自 AiNiee、剥离了其 App 框架），**无需克隆 AiNiee 仓库**，只需一个装了几个轻量库的 Python。自带格式：epub/txt/md/docx/xlsx/pptx/csv/srt/vtt/ass/lrc/po/json 系列等。**仅 PDF 与 Windows Office 转换未自包含**——要用时设 `AINIEE_REPO` 回退到 AiNiee。
 
 **一次性准备：**
 
-1. **克隆 / 准备本地 AiNiee 仓库**（如尚未有）：
-   ```bash
-   git clone https://github.com/NEKOparapa/AiNiee.git
-   ```
-   并确保其 venv 已建好、依赖已装（按 AiNiee 自身说明）。
-
-2. **确认本技能的安装位置**。把本 `ainiee-translate/` 文件夹放进 agent 的 skills 目录：
+1. **确认本技能的安装位置**。把本 `ainiee-translate/` 文件夹放进 agent 的 skills 目录：
    ```bash
    ~/.claude/skills/ainiee-translate/     # Claude Code
    ~/.codex/skills/ainiee-translate/      # Codex（OpenAI Codex CLI）
    ```
-   下文用 `$SKILL_DIR` 指代它（例：`~/.claude/skills/ainiee-translate` 或 `~/.codex/skills/ainiee-translate`）。**在 Codex 等非 Claude Code 平台使用、以及工具名（Bash/Task/TodoWrite…）对照见 [`references/codex-tools.md`](references/codex-tools.md)。**
+   下文用 `$SKILL_DIR` 指代它。**在 Codex 等非 Claude Code 平台使用、以及工具名（Bash/Task/TodoWrite…）对照见 [`references/codex-tools.md`](references/codex-tools.md)。**
 
-3. **设置三个路径变量**（每个新终端都要设；或写入 shell profile）：
+2. **建一个 venv 并装依赖**（任意 Python ≥ 3.12）：
    ```bash
-   export SKILL_DIR=~/.claude/skills/ainiee-translate     # 本技能安装目录
-   export AINIEE_REPO=/path/to/AiNiee                      # 本地 AiNiee 仓库
-   export AINIEE_PY=/path/to/AiNiee/.venv/bin/python       # AiNiee venv 的 python（Windows 为 .venv\Scripts\python.exe）
+   python3 -m venv ~/.venvs/ainiee-translate
+   ~/.venvs/ainiee-translate/bin/pip install \
+     msgspec beautifulsoup4 lxml rich openpyxl polib python-pptx chardet
+   ```
+
+3. **设置两个路径变量**（每个新终端；或写入 shell profile）：
+   ```bash
+   export SKILL_DIR=~/.claude/skills/ainiee-translate            # 本技能安装目录
+   export AINIEE_PY=~/.venvs/ainiee-translate/bin/python         # 上面 venv 的 python
+   # 可选：仅翻 PDF / Office(Windows) 这类未自包含格式时，回退到 AiNiee：
+   # export AINIEE_REPO=/path/to/AiNiee
    ```
 
 **命令前缀（后文用 `<PFX>` 代替）：**
 
 ```bash
-AINIEE_REPO="$AINIEE_REPO" PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY"
+PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY"
 ```
 
-> 管道脚本以 `ainiee_translate` 包形式打包在 `$SKILL_DIR/scripts/` 下，`PYTHONPATH` 指向该 `scripts` 目录即可 `-m ainiee_translate.<module>` 调用；`AINIEE_REPO` 让脚本把 AiNiee 仓库加入 `sys.path`。若 `AINIEE_REPO` 未设置，脚本会报错并提示。
+> 管道脚本以 `ainiee_translate` 包形式打包在 `$SKILL_DIR/scripts/` 下，`PYTHONPATH` 指向该 `scripts` 目录即可 `-m ainiee_translate.<module>` 调用。`AINIEE_REPO` 只有 PDF/Office 回退才需要；不设也能跑自带格式。
 
 **自检命令（确认环境就绪）：**
 
 ```bash
-AINIEE_REPO="$AINIEE_REPO" PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
-  -c "from ainiee_translate.ainiee_lib import load; load(); print('AiNiee runtime OK')"
+PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
+  -c "from ainiee_translate import io_dispatch; print('formats OK:', io_dispatch.supported_extensions())"
 ```
 
 ---
@@ -309,14 +311,14 @@ mkdir -p "$WORK/work" "$WORK/out"
 ## 附录 A：命令速查
 
 ```bash
-# 三个路径变量（每次新终端）
+# 路径变量（每次新终端）
 export SKILL_DIR=~/.claude/skills/ainiee-translate
-export AINIEE_REPO=/path/to/AiNiee
-export AINIEE_PY=/path/to/AiNiee/.venv/bin/python
+export AINIEE_PY=~/.venvs/ainiee-translate/bin/python   # venv with: msgspec bs4 lxml rich openpyxl polib python-pptx chardet
 export WORK=~/my-book
+# 可选：export AINIEE_REPO=/path/to/AiNiee   # 仅 PDF / Office 回退
 
 # 命令前缀
-PFX="AINIEE_REPO=$AINIEE_REPO PYTHONPATH=$SKILL_DIR/scripts $AINIEE_PY"
+PFX="PYTHONPATH=$SKILL_DIR/scripts $AINIEE_PY"
 
 # 解析
 $PFX -m ainiee_translate.parse --input book.epub --type AutoType --out "$WORK/work/cache.json"
@@ -344,8 +346,8 @@ $PFX -m ainiee_translate.verify "$WORK/work/cache.json" "$WORK/work/glossary.loc
 
 ## 附录 B：常见问题
 
-**Q: `parse` 报错找不到模块 / `AINIEE_REPO is not set`？**
-A: 确认 `AINIEE_REPO` 已设置且指向正确的本地 AiNiee 仓库，并使用的是 AiNiee venv 的 python（`$AINIEE_PY`）而非系统 Python。`PYTHONPATH` 须指向 `$SKILL_DIR/scripts`。
+**Q: `parse` / `import` 报 `ModuleNotFoundError`（bs4 / lxml / openpyxl / polib / pptx）？**
+A: 缺依赖。在 `$AINIEE_PY` 的 venv 里 `pip install msgspec beautifulsoup4 lxml rich openpyxl polib python-pptx chardet`，并确认 `PYTHONPATH` 指向 `$SKILL_DIR/scripts`。不再需要 `AINIEE_REPO`（仅 PDF/Office 回退才设）。
 
 **Q: `batch read` 返回空数组 `[]`？**
 A: 所有段落均已翻译完毕（`translation_status = TRANSLATED`），可以进行导出步骤。

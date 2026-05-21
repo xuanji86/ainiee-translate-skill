@@ -3,7 +3,18 @@ name = "ainiee-translate"
 version = "0.1.0"
 requires-python = ">=3.12"
 license = "AGPL-3.0-only"
-dependencies = ["msgspec"]
+# Self-contained parse/export (vendored AiNiee readers/writers under _vendor/).
+# No external AiNiee repo needed; these are all light pure-Python wheels.
+dependencies = [
+    "msgspec",          # cache.json (de)serialization
+    "beautifulsoup4",   # epub / docx html parsing
+    "lxml",             # bs4 "xml" parser backend (epub container/opf)
+    "rich",             # reader/writer progress + info output
+    "openpyxl",         # xlsx (Xlsx / WolfXlsx / TPP)
+    "polib",            # po (gettext)
+    "python-pptx",      # pptx
+    "chardet",          # optional encoding sniff (txt/srt/...); graceful if absent
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
