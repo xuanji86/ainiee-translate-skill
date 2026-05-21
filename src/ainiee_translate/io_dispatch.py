@@ -1,10 +1,13 @@
 """Self-contained parse/export dispatcher built on the vendored AiNiee readers
 and writers (no external AiNiee repo). Replaces AiNiee's FileReader / FileOutputer
-/ DirectoryReader / DirectoryWriter for the formats we ship — without the app
-framework (PyQt / mediapipe / babeldoc / CacheManager).
+/ DirectoryReader / DirectoryWriter for all light formats — without the app
+framework (PyQt / mediapipe / babeldoc / CacheManager / Office COM).
 
 parse_input(input)  -> CacheProject   (walk files, read, assign text_index)
 export_project(...)  -> writes <out>/<name>_translated.<ext> + bilingual_<ext>/
+
+Ambiguous extensions (.json, .xlsx map to several formats) are disambiguated by
+each reader's content check (can_read(fast=False)), most-specific first.
 """
 import argparse
 import fnmatch
@@ -18,22 +21,80 @@ from ._vendor.ModuleFolders.Domain.FileReader.BaseReader import InputConfig
 from ._vendor.ModuleFolders.Domain.FileReader.TxtReader import TxtReader
 from ._vendor.ModuleFolders.Domain.FileReader.MdReader import MdReader
 from ._vendor.ModuleFolders.Domain.FileReader.EpubReader import EpubReader
+from ._vendor.ModuleFolders.Domain.FileReader.AssReader import AssReader
+from ._vendor.ModuleFolders.Domain.FileReader.CsvReader import CsvReader
+from ._vendor.ModuleFolders.Domain.FileReader.DocxReader import DocxReader
+from ._vendor.ModuleFolders.Domain.FileReader.I18nextReader import I18nextReader
+from ._vendor.ModuleFolders.Domain.FileReader.LrcReader import LrcReader
+from ._vendor.ModuleFolders.Domain.FileReader.MToolReader import MToolReader
+from ._vendor.ModuleFolders.Domain.FileReader.ParatranzReader import ParatranzReader
+from ._vendor.ModuleFolders.Domain.FileReader.PoReader import PoReader
+from ._vendor.ModuleFolders.Domain.FileReader.PptxReader import PptxReader
+from ._vendor.ModuleFolders.Domain.FileReader.RenpyReader import RenpyReader
+from ._vendor.ModuleFolders.Domain.FileReader.SrtReader import SrtReader
+from ._vendor.ModuleFolders.Domain.FileReader.TPPReader import TPPReader
+from ._vendor.ModuleFolders.Domain.FileReader.TransReader import TransReader
+from ._vendor.ModuleFolders.Domain.FileReader.VntReader import VntReader
+from ._vendor.ModuleFolders.Domain.FileReader.VttReader import VttReader
+from ._vendor.ModuleFolders.Domain.FileReader.WolfXlsxReader import WolfXlsxReader
+from ._vendor.ModuleFolders.Domain.FileReader.XlsxReader import XlsxReader
 from ._vendor.ModuleFolders.Domain.FileOutputer.BaseWriter import (
     BaseTranslationWriter, OutputConfig, TranslationOutputConfig, BilingualOrder)
 from ._vendor.ModuleFolders.Domain.FileOutputer.TxtWriter import TxtWriter
 from ._vendor.ModuleFolders.Domain.FileOutputer.MdWriter import MdWriter
 from ._vendor.ModuleFolders.Domain.FileOutputer.EpubWriter import EpubWriter
+from ._vendor.ModuleFolders.Domain.FileOutputer.AssWriter import AssWriter
+from ._vendor.ModuleFolders.Domain.FileOutputer.CsvWriter import CsvWriter
+from ._vendor.ModuleFolders.Domain.FileOutputer.DocxWriter import DocxWriter
+from ._vendor.ModuleFolders.Domain.FileOutputer.I18nextWriter import I18nextWriter
+from ._vendor.ModuleFolders.Domain.FileOutputer.LrcWriter import LrcWriter
+from ._vendor.ModuleFolders.Domain.FileOutputer.MToolWriter import MToolWriter
+from ._vendor.ModuleFolders.Domain.FileOutputer.ParatranzWriter import ParatranzWriter
+from ._vendor.ModuleFolders.Domain.FileOutputer.PoWriter import PoWriter
+from ._vendor.ModuleFolders.Domain.FileOutputer.PptxWriter import PptxWriter
+from ._vendor.ModuleFolders.Domain.FileOutputer.RenpyWriter import RenpyWriter
+from ._vendor.ModuleFolders.Domain.FileOutputer.SrtWriter import SrtWriter
+from ._vendor.ModuleFolders.Domain.FileOutputer.TPPWriter import TPPWriter
+from ._vendor.ModuleFolders.Domain.FileOutputer.TransWriter import TransWriter
+from ._vendor.ModuleFolders.Domain.FileOutputer.VntWriter import VntWriter
+from ._vendor.ModuleFolders.Domain.FileOutputer.VttWriter import VttWriter
+from ._vendor.ModuleFolders.Domain.FileOutputer.WolfXlsxWriter import WolfXlsxWriter
+from ._vendor.ModuleFolders.Domain.FileOutputer.XlsxWriter import XlsxWriter
 
-# file extension -> (ReaderClass, WriterClass). Extend in phase 3.
-REGISTRY = {
-    "txt": (TxtReader, TxtWriter),
-    "md": (MdReader, MdWriter),
-    "epub": (EpubReader, EpubWriter),
+_READERS = [TxtReader, MdReader, EpubReader, AssReader, CsvReader, DocxReader, I18nextReader,
+            LrcReader, MToolReader, ParatranzReader, PoReader, PptxReader, RenpyReader, SrtReader,
+            TPPReader, TransReader, VntReader, VttReader, WolfXlsxReader, XlsxReader]
+_WRITERS = [TxtWriter, MdWriter, EpubWriter, AssWriter, CsvWriter, DocxWriter, I18nextWriter,
+            LrcWriter, MToolWriter, ParatranzWriter, PoWriter, PptxWriter, RenpyWriter, SrtWriter,
+            TPPWriter, TransWriter, VntWriter, VttWriter, WolfXlsxWriter, XlsxWriter]
+
+# project_type -> (ReaderClass, WriterClass)
+_WRITER_BY_TYPE = {w.get_project_type(): w for w in _WRITERS}
+FORMATS = {r.get_project_type(): (r, _WRITER_BY_TYPE.get(r.get_project_type())) for r in _READERS}
+
+# file extension -> ordered project_types to try (most specific first for ambiguous exts)
+EXT_CANDIDATES = {
+    "txt": ["Txt"], "md": ["Md"], "epub": ["Epub"], "ass": ["Ass"], "csv": ["Csv"],
+    "docx": ["Docx"], "lrc": ["Lrc"], "po": ["Po"], "pptx": ["Pptx"], "rpy": ["Renpy"],
+    "srt": ["Srt"], "trans": ["Trans"], "vtt": ["Vtt"],
+    "json": ["Mtool", "Paratranz", "I18next", "Vnt"],   # content-detected
+    "xlsx": ["WolfXlsx", "Tpp", "Xlsx"],                # WolfXlsx/Tpp specific, Xlsx generic last
 }
 
 
 def supported_extensions() -> list[str]:
-    return sorted(REGISTRY)
+    return sorted(EXT_CANDIDATES)
+
+
+def _pick_reader(fp: Path, base: Path, project_type: str):
+    cands = EXT_CANDIDATES.get(fp.suffix.lstrip(".").lower(), [])
+    if project_type != "AutoType":
+        cands = [project_type] if project_type in cands else []
+    for t in cands:
+        reader = FORMATS[t][0](InputConfig(input_root=base))
+        if len(cands) == 1 or reader.can_read(fp, fast=False):   # content-detect ambiguous exts
+            return reader
+    return None
 
 
 def _generate_project_name(project) -> None:
@@ -66,17 +127,14 @@ def parse_input(input_path: str, project_type: str = "AutoType", exclude_rule: s
     for fp in files:
         if any(fnmatch.fnmatch(fp.name, r) for r in excludes):
             continue
-        pair = REGISTRY.get(fp.suffix.lstrip(".").lower())
-        if not pair:
+        reader = _pick_reader(fp, base, project_type)
+        if reader is None:
             continue
-        reader = pair[0](InputConfig(input_root=base))
-        if project_type != "AutoType" and reader.get_project_type() != project_type:
-            continue
-        cache_file = reader.read_source_file(fp)          # pre + on_read + (no-op) post
+        cache_file = reader.read_source_file(fp)            # pre + on_read + (no-op) post
         if not cache_file or not cache_file.items:
             continue
         cache_file.storage_path = str(fp.relative_to(base))
-        cache_file.file_project_type = reader.get_file_project_type(fp)
+        cache_file.file_project_type = reader.get_project_type()
         for item in cache_file.items:
             item.text_index = text_index
             item.model = "none"
@@ -99,6 +157,14 @@ def _with_suffix(storage_path: str, name_suffix: str) -> str:
     return f"{parts[0]}{name_suffix}.{parts[1]}" if len(parts) == 2 else f"{parts[0]}{name_suffix}"
 
 
+def _writer_type_for(cache_file, storage_path: str) -> str | None:
+    ptype = getattr(cache_file, "file_project_type", None)
+    if ptype in FORMATS:
+        return ptype
+    cands = EXT_CANDIDATES.get(Path(storage_path).suffix.lstrip(".").lower(), [])
+    return cands[-1] if cands else None      # generic fallback (e.g. Xlsx) when type unknown
+
+
 def export_project(project, output_path: str, input_path: str, config: dict | None = None) -> None:
     config = config or {}
     out_root = Path(output_path)
@@ -112,11 +178,11 @@ def export_project(project, output_path: str, input_path: str, config: dict | No
         order = BilingualOrder.TRANSLATION_FIRST
 
     for storage_path, cache_file in project.files.items():
-        ext = Path(storage_path).suffix.lstrip(".").lower()
-        pair = REGISTRY.get(ext)
-        if not pair:
+        ptype = _writer_type_for(cache_file, storage_path)
+        if ptype is None:
             continue
-        writer = pair[1](OutputConfig(
+        ext = Path(storage_path).suffix.lstrip(".").lower() or ptype.lower()
+        writer = FORMATS[ptype][1](OutputConfig(
             translated_config=TranslationOutputConfig(True, translated_suffix, out_root),
             bilingual_config=TranslationOutputConfig(True, bilingual_suffix, out_root / f"bilingual_{ext}"),
             input_root=in_path, bilingual_order=order))

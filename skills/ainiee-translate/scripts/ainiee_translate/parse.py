@@ -7,15 +7,13 @@ import os
 from pathlib import Path
 from . import cache_io, io_dispatch
 
-_NATIVE_TYPES = {"Txt", "Md", "Epub", "AutoType"}
-
 
 def _needs_ainiee(input_path: str, project_type: str) -> bool:
-    """True when the input is a format we don't ship natively."""
-    if project_type not in _NATIVE_TYPES:
+    """True when the input is a format we don't ship natively (e.g. PDF/Office)."""
+    if project_type not in (set(io_dispatch.FORMATS) | {"AutoType"}):
         return True
     p = Path(input_path)
-    return p.is_file() and p.suffix.lstrip(".").lower() not in io_dispatch.REGISTRY
+    return p.is_file() and p.suffix.lstrip(".").lower() not in io_dispatch.EXT_CANDIDATES
 
 
 def parse_input(input_path: str, project_type: str = "AutoType", exclude_rule: str = ""):

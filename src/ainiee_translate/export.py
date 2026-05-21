@@ -17,7 +17,7 @@ DEFAULT_CONFIG = {
 def export_project(project, output_path: str, input_path: str, config: dict | None = None) -> None:
     config = config or DEFAULT_CONFIG
     exts = {Path(sp).suffix.lstrip(".").lower() for sp in project.files}
-    if not exts <= set(io_dispatch.REGISTRY) and os.environ.get("AINIEE_REPO"):
+    if not exts <= set(io_dispatch.EXT_CANDIDATES) and os.environ.get("AINIEE_REPO"):
         _export_via_ainiee(project, output_path, input_path, config)   # PDF/Office/etc.
     else:
         io_dispatch.export_project(project, output_path, input_path, config)
