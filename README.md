@@ -49,6 +49,123 @@ ln -s "$PWD/ainiee-translate/skills/ainiee-translate" ~/.codex/skills/ainiee-tra
 - **模块化**：把整套任务设置（翻译/润色提示词、词汇表、禁翻表、风格、源/目标语言）存成可复用**模块**（`~/.ainiee-translate/modules/`），一个插件应对不同书；可**一键从 AiNiee profile 导入**。
 - **命令菜单**：装成插件后用 `/ainiee-translate:*` 斜杠命令完成导入/切换模块、生成提示词、翻译、**润色**、导出、校验等（`/ainiee-translate:menu` 看清单）。
 
+## 命令
+
+分两层：**斜杠命令**（装成插件后用，`/ainiee-translate:*`）和它们底层调用的 **Python CLI**（Codex / 手动 / 调试用）。多数命令需先设好 `AINIEE_REPO`、`AINIEE_PY`、`SKILL_DIR` 三个环境变量（见上「安装」）。
+
+### 斜杠命令（13 个）
+
+**翻译流程**
+
+| 命令 | 用法 | 作用 |
+|------|------|------|
+| `/ainiee-translate:translate` | `<输入文件> [模块名]` | 端到端翻译一本 epub/txt（解析→词汇表→翻译→导出→校验）|
+| `/ainiee-translate:import-project` | `[list \| <AinieeCacheData.json 或项目ID> <项目目录>]` | 导入已有项目（AiNiee 缓存或既有 cache.json）继续翻译/润色/校验/导出 |
+| `/ainiee-translate:glossary` | `[--config PATH] [--analysis PATH]` | 从 AiNiee 配置/profile 构建并锁定工作词汇表 |
+| `/ainiee-translate:polish` | `[批大小]` | 对已翻译文本跑润色 pass（按模块润色提示词二次加工）|
+| `/ainiee-translate:export` | `<原始输入文件>` | 把翻译好的缓存导出为成品 epub/txt |
+| `/ainiee-translate:verify` | （无参数）| 校验残留规则违规（漏译、人名未保留）|
+| `/ainiee-translate:status` | （无参数）| 查看项目状态（已绑模块 / 未译·已译计数 / 续跑点）|
+
+**模块与提示词**
+
+| 命令 | 用法 | 作用 |
+|------|------|------|
+| `/ainiee-translate:import-profile` | `<profile.json> <模块名>` | 导入 AiNiee profile/config 为可复用模块 |
+| `/ainiee-translate:module` | `<list\|show\|create\|load> [名字] [--work 项目目录]` | 管理模块（列出/查看/新建/加载进项目）|
+| `/ainiee-translate:switch-prompt` | `[模块名]` | 切换当前项目使用的模块/提示词 |
+| `/ainiee-translate:show-prompt` | `[模块名]` | 查看模块的提示词与词汇表摘要 |
+| `/ainiee-translate:gen-prompt` | `<translate\|polish> [模块名]` | 让 agent 帮你起草翻译/润色提示词（AiNiee 风格）写进模块 |
+| `/ainiee-translate:menu` | （无参数）| 显示命令菜单 |
+
+### 底层 Python CLI
+
+前缀 `<PFX>` = `AINIEE_REPO="$AINIEE_REPO" PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY"`，调用形如 `<PFX> -m ainiee_translate.<模块> …`：
+
+| 模块 | 用法 | 作用 |
+|------|------|------|
+| `parse` | `--input <书> --type AutoType --out <cache.json>` | 解析 epub/txt 成缓存 |
+| `glossary` | `--config <config.json> [--analysis <路径>] --out <locked.json>` | 构建锁定词汇表 |
+| `batch` | `read <cache> --size N` · `read-translated <cache> --size N` · `write <cache> <译文.json>` | 取未译批 / 取待润色批 / 写回译文 |
+| `prompt` | `--config <config> [--out F] [--translate-system\|--polish]` | 汇总用户自定义/系统/润色提示词 |
+| `module` | `list` · `show <名>` · `create <名> [--source-language X --target-language Y]` · `load <名> [--work DIR]` | 模块管理 |
+| `profile` | `import --profile <p.json> --name <名> [--target-language X] [--force]` | profile → 模块 |
+| `project` | `list [--ainiee-cache-dir DIR]` · `import (--ainiee <ID>\|--cache <路径>) --work <目录>` | 列出/导入已有项目 |
+| `polish` | `write <cache> <润色.json>` | 写回润色结果（状态→POLISHED）|
+| `export` | `--cache <cache> --output <目录> --input <原书>` | 导出成品 |
+| `verify` | `<cache> <locked.json>` | 校验漏译/人名未保留 |
+
+## 构建模块
+
+**模块**把一整套任务设置（翻译/润色提示词、词汇表、禁翻表、风格、源/目标语言）打包成一个可复用、可切换的文件夹，让同一个插件应对不同书。模块默认放在 `~/.ainiee-translate/modules/<名字>/`（可用环境变量 `AINIEE_TRANSLATE_HOME` 覆盖根目录）。
+
+### 模块目录结构
+
+```
+~/.ainiee-translate/modules/<名字>/
+  module.json          # 元数据 + 清单（名字、源/目标语言、各开关、来源）
+  translate_prompt.md  # 翻译提示词（AiNiee 风格；加载后即项目里的 user_prompt.md）
+  polish_prompt.md     # 润色提示词（可选；没有则不提供润色）
+  glossary.locked.json # 锁定词汇表 {characters, terms, non_translate}
+  style.md             # 写作风格/世界观（可选，自由文本）
+  examples.json        # few-shot 示例（可选）
+```
+
+`glossary.locked.json` 的形状：
+
+```json
+{
+  "characters": [
+    {"canonical": "James Marlow", "render": "James Marlow", "aliases": ["Marlow"], "gender": "M", "note": "舰长"}
+  ],
+  "terms": [
+    {"src": "Korin", "dst": "科林", "category": "race"},
+    {"src": "Highmark", "dst": "Highmark", "keep_source": true, "category": "place"}
+  ],
+  "non_translate": [{"marker": "<i>", "category": "tag"}]
+}
+```
+
+- `characters[].render`：人名最终写法（人名通常 `render == canonical`，即保留原文）。
+- `terms[].keep_source: true`：该词保持原文不译（`dst == src` 时自动标记）。
+- `non_translate[].marker`：原样保留的标记/占位符。
+
+### 三种建法
+
+**① 从 AiNiee profile 导入（最快）** —— 一把梭把语言、翻译/润色提示词、术语表、禁翻表全提进来：
+
+```bash
+<PFX> -m ainiee_translate.profile import --profile <profile.json> --name mybook
+# 或插件里：/ainiee-translate:import-profile <profile.json> mybook
+<PFX> -m ainiee_translate.module show mybook        # 检查导入结果
+```
+
+**② 新建空模块再填** —— 适合从零手写规则：
+
+```bash
+<PFX> -m ainiee_translate.module create mybook --source-language English --target-language 简体中文
+# 然后编辑 ~/.ainiee-translate/modules/mybook/ 下的：
+#   translate_prompt.md   写你的翻译规则（人名/头衔/风格/标点等）
+#   polish_prompt.md      写润色规则（可留空 = 不润色）
+#   glossary.locked.json  填角色/术语/禁翻
+```
+不想手写提示词？用 `/ainiee-translate:gen-prompt translate mybook`（或 `polish`）让 agent 访谈你后起草，直接写进模块。
+
+**③ 直接放文件** —— 按上面的目录结构手动建文件夹也行（`module.json` 可参照已有模块）。
+
+### 加载 / 切换
+
+把模块拷进某个翻译项目（自包含），翻译时即生效：
+
+```bash
+<PFX> -m ainiee_translate.module load mybook --work ~/my-project
+# 或插件里：/ainiee-translate:switch-prompt mybook
+```
+
+加载会把模块的 `translate_prompt.md`→`user_prompt.md`、`polish_prompt.md`、`glossary.locked.json` 拷进 `~/my-project/work/`（已存在则先时间戳备份），之后 `translate` / `polish` 自动遵循「AiNiee 原生原则 ＋ 模块提示词 ＋ 锁定词汇表」。`module list` 看所有模块，`/ainiee-translate:show-prompt mybook` 看摘要。
+
+> 模块可放进独立 git 仓库分发：`git clone <repo> ~/.ainiee-translate/modules/<名字>` 即装。
+
 ## 为什么
 
 实测：整本约 ~302K token，对比经 API 跑同书的 1–2M，约 **5× 更省**（省在不重发提示词/术语）；质量与原管线相当，**全局一致性更好**（去重、术语一致、抓漏译）。
