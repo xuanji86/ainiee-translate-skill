@@ -1,12 +1,28 @@
-"""Parse an input folder/file into a CacheProject using AiNiee's FileReader."""
+"""Parse an input folder/file into a CacheProject.
+
+Self-contained by default (vendored readers via io_dispatch). For formats not
+shipped natively (e.g. PDF / Office), set AINIEE_REPO to fall back to AiNiee."""
 import argparse
-from .ainiee_lib import load
-from . import cache_io
+import os
+from pathlib import Path
+from . import cache_io, io_dispatch
+
+_NATIVE_TYPES = {"Txt", "Md", "Epub", "AutoType"}
+
+
+def _needs_ainiee(input_path: str, project_type: str) -> bool:
+    """True when the input is a format we don't ship natively."""
+    if project_type not in _NATIVE_TYPES:
+        return True
+    p = Path(input_path)
+    return p.is_file() and p.suffix.lstrip(".").lower() not in io_dispatch.REGISTRY
 
 
 def parse_input(input_path: str, project_type: str = "AutoType", exclude_rule: str = ""):
-    reader = load().FileReader()
-    return reader.read_files(project_type, input_path, exclude_rule)
+    if _needs_ainiee(input_path, project_type) and os.environ.get("AINIEE_REPO"):
+        from .ainiee_lib import load
+        return load().FileReader().read_files(project_type, input_path, exclude_rule)
+    return io_dispatch.parse_input(input_path, project_type, exclude_rule)
 
 
 def main(argv=None):

@@ -1,11 +1,11 @@
-"""Export a translated CacheProject to output files using AiNiee's FileOutputer.
+"""Export a translated CacheProject to output files.
 
-Note: some AiNiee writers read config.json via WriterUtil.get_ainiee_config().
-We pass an explicit output config; if a writer still needs config.json and none
-exists, surface the error rather than silently producing nothing."""
+Self-contained by default (vendored writers via io_dispatch). For formats not
+shipped natively (e.g. PDF / Office), set AINIEE_REPO to fall back to AiNiee."""
 import argparse
-from .ainiee_lib import load, repo_path
-from . import cache_io
+import os
+from pathlib import Path
+from . import cache_io, io_dispatch
 
 DEFAULT_CONFIG = {
     "translated_suffix": "_translated",
@@ -13,37 +13,31 @@ DEFAULT_CONFIG = {
     "bilingual_order": "translation_first",
 }
 
-# Attributes that BaseWriter reads from the global WriterUtil config singleton,
-# and the safe defaults to use when no config.json is present on this machine.
-_WRITER_CONFIG_DEFAULTS = {
-    "keep_original_encoding": False,  # False → always write UTF-8 output
-}
+
+def export_project(project, output_path: str, input_path: str, config: dict | None = None) -> None:
+    config = config or DEFAULT_CONFIG
+    exts = {Path(sp).suffix.lstrip(".").lower() for sp in project.files}
+    if not exts <= set(io_dispatch.REGISTRY) and os.environ.get("AINIEE_REPO"):
+        _export_via_ainiee(project, output_path, input_path, config)   # PDF/Office/etc.
+    else:
+        io_dispatch.export_project(project, output_path, input_path, config)
 
 
-def _ensure_writer_config() -> None:
-    """Seed required WriterUtil config attributes so export never depends on an
-    ambient config.json.  Safe to call multiple times; only sets attributes that
-    are genuinely missing or None."""
+def _export_via_ainiee(project, output_path, input_path, config) -> None:
+    """Fallback for formats not shipped natively (requires AINIEE_REPO)."""
     import sys
+    from .ainiee_lib import load, repo_path
     repo = repo_path()
     if repo not in sys.path:
         sys.path.insert(0, repo)
     try:
         from ModuleFolders.Domain.FileOutputer import WriterUtil
         cfg = WriterUtil.get_ainiee_config()
-        for attr, default in _WRITER_CONFIG_DEFAULTS.items():
-            if getattr(cfg, attr, None) is None:
-                setattr(cfg, attr, default)
+        if getattr(cfg, "keep_original_encoding", None) is None:
+            cfg.keep_original_encoding = False
     except Exception:
-        # If AiNiee internals change or the import fails, don't block export —
-        # the underlying writer will surface its own error with full context.
         pass
-
-
-def export_project(project, output_path: str, input_path: str, config: dict | None = None) -> None:
-    _ensure_writer_config()
-    outputer = load().FileOutputer()
-    outputer.output_translated_content(project, output_path, input_path, config or DEFAULT_CONFIG)
+    load().FileOutputer().output_translated_content(project, output_path, input_path, config)
 
 
 def main(argv=None):
