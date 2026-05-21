@@ -13,7 +13,7 @@ git clone https://github.com/NEKOparapa/AiNiee.git    # 并按其说明建好 .v
 ### 方式一：作为 Claude Code 插件安装（推荐）
 
 ```text
-/plugin marketplace add xuanji86/ainiee-translate
+/plugin marketplace add xuanji86/ainiee-translate-skill
 /plugin install ainiee-translate@ainiee-translate
 ```
 
@@ -22,8 +22,8 @@ git clone https://github.com/NEKOparapa/AiNiee.git    # 并按其说明建好 .v
 ### 方式二：手动安装（不走插件）
 
 ```bash
-git clone https://github.com/xuanji86/ainiee-translate.git
-cp -r ainiee-translate/skills/ainiee-translate ~/.claude/skills/    # 个人技能目录
+git clone https://github.com/xuanji86/ainiee-translate-skill.git
+cp -r ainiee-translate-skill/skills/ainiee-translate ~/.claude/skills/    # 个人技能目录
 ```
 
 技能自带管道脚本（`skills/ainiee-translate/scripts/`），无需 `pip install`；同样设好上面三个环境变量即可。
@@ -33,8 +33,8 @@ cp -r ainiee-translate/skills/ainiee-translate ~/.claude/skills/    # 个人技�
 SKILL.md 是跨平台标准格式，可直接装进 Codex 的技能目录（`~/.codex/skills`），Codex 会自动发现：
 
 ```bash
-git clone https://github.com/xuanji86/ainiee-translate.git
-ln -s "$PWD/ainiee-translate/skills/ainiee-translate" ~/.codex/skills/ainiee-translate
+git clone https://github.com/xuanji86/ainiee-translate-skill.git
+ln -s "$PWD/ainiee-translate-skill/skills/ainiee-translate" ~/.codex/skills/ainiee-translate
 ```
 
 设好 `SKILL_DIR`（指向 `~/.codex/skills/ainiee-translate`）、`AINIEE_REPO`、`AINIEE_PY`，对 Codex 说「用 ainiee-translate 翻译这本 epub」即可。工具名对照（Bash→shell、Task→spawn_agent…）、多 agent 并行所需的 `multi_agent` 配置见 [`skills/ainiee-translate/references/codex-tools.md`](skills/ainiee-translate/references/codex-tools.md)。
