@@ -22,44 +22,35 @@ parse → 构建锁定词汇表 → 逐章翻译（agent 按规则） → 写回
 
 ## 真实运行时说明（重要）
 
-`parse` 和 `export` 模块内部调用 AiNiee 的 `FileReader` / `FileOutputer`，需要 AiNiee 的运行时依赖（如 `msgspec`、epub 解析库等）。
+`parse`/`export` 现在**自包含**（解析/导出模块随包打在 `_vendor/` 下，改写自 AiNiee、剥离其 App 框架），**不再需要 AiNiee 仓库**，只需一个装了几个轻量库的 Python：`msgspec beautifulsoup4 lxml rich openpyxl polib python-pptx chardet`。自带 epub/txt/md/docx/xlsx/pptx/csv/srt/vtt/ass/lrc/po/json 系列等；**仅 PDF / Windows Office 未自包含**，要用时设 `AINIEE_REPO` 回退到 AiNiee。
 
-**因此必须使用 AiNiee 的 venv，不能用独立的空 venv。**
-
-**命令前缀（后文用 `<PFX>` 代替）：**
+**命令前缀（后文用 `<PFX>` 代替）：** 任意装好上述依赖的 venv 即可（本机的 AiNiee venv 已含这些依赖，可直接复用）：
 
 ```bash
-AINIEE_REPO=/Users/Anji/Desktop/AiNiee \
 PYTHONPATH=/Users/Anji/Desktop/ainiee-translate/src \
 /Users/Anji/Desktop/AiNiee/.venv/bin/python
 ```
 
-或者，先把包装进 AiNiee 的 venv（只需一次）：
+也可建专用 venv（与 AiNiee 完全无关）：
 
 ```bash
-cd /Users/Anji/Desktop/ainiee-translate
-/Users/Anji/Desktop/AiNiee/.venv/bin/pip install -e .
+python3 -m venv ~/.venvs/ainiee-translate
+~/.venvs/ainiee-translate/bin/pip install msgspec beautifulsoup4 lxml rich openpyxl polib python-pptx chardet
+# 之后把上面的 python 换成 ~/.venvs/ainiee-translate/bin/python
 ```
-
-安装后可以省略 `PYTHONPATH`，但仍需 `AINIEE_REPO` 和 AiNiee venv 的 Python。
 
 **测试命令示例：**
 
 ```bash
 cd /Users/Anji/Desktop/ainiee-translate
-AINIEE_REPO=/Users/Anji/Desktop/AiNiee \
-/Users/Anji/Desktop/AiNiee/.venv/bin/python -m pytest -v
+PYTHONPATH=src /Users/Anji/Desktop/AiNiee/.venv/bin/python -m pytest -p no:warnings -q
 ```
 
 ---
 
 ## 步骤 1：环境准备
 
-1. **设置 `AINIEE_REPO`**（指向本地 AiNiee 仓库）：
-
-   ```bash
-   export AINIEE_REPO=/Users/Anji/Desktop/AiNiee
-   ```
+1. **依赖就绪**：用一个装了 `msgspec beautifulsoup4 lxml rich openpyxl polib python-pptx chardet` 的 Python（本机 AiNiee venv 已含这些依赖，可直接复用）。**`AINIEE_REPO` 不再必需**，仅翻 PDF / Office 时才设。
 
 2. **技能符号链接**（只需一次）：
 
@@ -303,11 +294,9 @@ AINIEE_REPO=/Users/Anji/Desktop/AiNiee \
 ## 附录 A：命令速查
 
 ```bash
-# 设置环境变量（每次新终端）
-export AINIEE_REPO=/Users/Anji/Desktop/AiNiee
-
-# 命令前缀
-PFX="AINIEE_REPO=/Users/Anji/Desktop/AiNiee PYTHONPATH=/Users/Anji/Desktop/ainiee-translate/src /Users/Anji/Desktop/AiNiee/.venv/bin/python"
+# 命令前缀（任意装好依赖的 python；本机 AiNiee venv 已含依赖）
+PFX="PYTHONPATH=/Users/Anji/Desktop/ainiee-translate/src /Users/Anji/Desktop/AiNiee/.venv/bin/python"
+# 仅 PDF/Office 回退才需要：export AINIEE_REPO=/Users/Anji/Desktop/AiNiee
 
 # 解析
 $PFX -m ainiee_translate.parse --input book.epub --type AutoType --out work/cache.json
@@ -332,15 +321,15 @@ $PFX -m ainiee_translate.verify work/cache.json work/mybook.locked.json
 
 # 完整测试套件
 cd /Users/Anji/Desktop/ainiee-translate
-AINIEE_REPO=/Users/Anji/Desktop/AiNiee /Users/Anji/Desktop/AiNiee/.venv/bin/python -m pytest -v
+PYTHONPATH=src /Users/Anji/Desktop/AiNiee/.venv/bin/python -m pytest -p no:warnings -q
 ```
 
 ---
 
 ## 附录 B：常见问题
 
-**Q: `parse` 报错找不到模块？**
-A: 确认 `AINIEE_REPO` 已设置且指向正确路径，且使用的是 AiNiee 的 venv（`/Users/Anji/Desktop/AiNiee/.venv/bin/python`）而不是系统 Python。
+**Q: `parse` 报 `ModuleNotFoundError`（bs4 / lxml / openpyxl / polib / pptx）？**
+A: 缺依赖。`pip install msgspec beautifulsoup4 lxml rich openpyxl polib python-pptx chardet`（本机 AiNiee venv 已含），并确认 `PYTHONPATH` 指向 `src`。不再需要 `AINIEE_REPO`（仅 PDF/Office 回退才设）。
 
 **Q: `batch read` 返回空数组 `[]`？**
 A: 所有段落均已翻译完毕（`translation_status = TRANSLATED`），可以进行导出步骤。
@@ -371,4 +360,4 @@ A: 在 `translations.json` 中将 `translated_text` 设为源文原样（或空�
 | `polish [批大小]` | 润色 pass |
 | `glossary` / `export <输入>` / `verify` / `status` | 词汇表 / 导出 / 校验 / 状态 |
 
-命令脚本路径用 `${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts`，并需用户设好 `AINIEE_REPO`/`AINIEE_PY`。
+命令脚本路径用 `${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts`，并需用户设好 `AINIEE_PY`（装好依赖的 python；`AINIEE_REPO` 仅 PDF/Office 回退）。
