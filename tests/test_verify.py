@@ -25,3 +25,17 @@ def test_clean_when_name_preserved():
     locked = {"characters": [{"canonical": "Marlow", "render": "Marlow", "aliases": []}]}
     items = [{"text_index": 3, "source_text": "Marlow nodded", "translated_text": "Marlow 点头", "translation_status": 1}]
     assert verify.check_items(items, locked=locked) == []
+
+def test_checks_polished_segments_too():
+    # status 2 (POLISHED) must be checked, not skipped — polished text lives in translated_text
+    locked = {"characters": [{"canonical": "Marlow", "render": "Marlow", "aliases": []}]}
+    items = [{"text_index": 5, "source_text": "Marlow nodded", "translated_text": "瑞克点头",
+              "translation_status": 2}]
+    issues = verify.check_items(items, locked=locked)
+    assert any(i["kind"] == "name_not_preserved" and i["text_index"] == 5 for i in issues)
+
+def test_skips_untranslated_and_excluded():
+    locked = {"characters": [{"canonical": "Marlow", "render": "Marlow", "aliases": []}]}
+    items = [{"text_index": 6, "source_text": "Marlow nodded", "translated_text": "", "translation_status": 0},
+             {"text_index": 7, "source_text": "Marlow nodded", "translated_text": "x", "translation_status": 7}]
+    assert verify.check_items(items, locked=locked) == []

@@ -287,7 +287,43 @@ PYTHONPATH=src /Users/Anji/Desktop/AiNiee/.venv/bin/python -m pytest -p no:warni
 - `empty_translation`：源段有内容但译文为空（漏译）。
 - `name_not_preserved`：源段含锁定表英文人名但译文中该名消失（人名汉化）。
 
-对每个问题，使用 `batch write` 修正对应 `text_index` 的译文后重新跑 verify，直到无问题。
+verify 检查**已译（status 1）和已润色（status 2）**两类段（润色文本就存在 `translated_text`）。对每个问题，使用 `batch write`（已译段）/ `polish write`（已润色段，保住状态）修正对应 `text_index` 的译文后重新跑 verify，直到无问题。
+
+### ⚠️ verify 的局限：为什么「verify 干净」≠「没有翻译错误」
+
+verify 是**词汇表执行器**，不是**发现器**。它只能发现「锁定表里登记过的人名」消失的情况，因此天然漏掉下面这些（实战中绝大多数漏网错误都属于此）：
+
+1. **词汇表覆盖不全（头号原因）**：verify 只查 `glossary.locked.json` 的 `characters`。**没进表的名字它根本不知道要查**——配角、地名、舰名，尤其当词汇表是从「上一本书」或 AiNiee 分析缓存里种出来、没针对当前书补全时。一份「2 个问题」的干净报告，往往只是因为表里恰好只有 2 个相关名字。→ **对策：词汇表必须随当前书补全**（见下方 `scan` 发现流程）。
+2. **整段成员检查，漏「同段对错并存」**：verify 只看「这个名字在该段译文里**在不在**」。若同一段里某名字一处保留英文、另一处被音译（例：`Keru 看着…后来克鲁离开`），verify 看到「Keru 在」就不报。
+3. **「全程音译」的名字无信号**：若某名字在**全书每一处**都被音译（例 `Tenmei→天明`、`Rianu→里亚努`），它从没以英文出现过，"时而对时而错"的不一致信号为零。
+4. **区分不了「音译错误」与「合理代词省略 / 合法意译」**：verify 是二元的「在/不在」。补全词汇表后，那些把名字合理处理成「他/她」的段会被误报为 `name_not_preserved`——需逐条人眼判断；同样，`Vulcan→瓦肯` 这种合法意译它也无法识别。
+5. **完全不覆盖的错误类型**：①「张冠李戴」——表外名字被换成**别的**名字（`Dax→萨姆`、`Gard→Vic`）；② OCR/解析**丢空格的粘连词**漏进译文（`thenaiskosfragment`、`anesaniblossom`）；③ 整句**未翻译的英文残留**留在译文里。
+
+### 步骤 7+：用 `scan` 发现词汇表缺口与解析瑕疵（补 verify 的盲区）
+
+```bash
+<PFX> -m ainiee_translate.scan \
+  ~/my-project/work/cache.json \
+  --locked ~/my-project/work/glossary.locked.json \
+  --mode all          # all | discover | merges
+```
+
+- `discover`：找**不在词汇表、原文有但译文中消失**的专名（语言无关、不依赖词汇表、逐出现处、覆盖 status 1+2）。分两桶：
+  - `inconsistent`（**高置信，优先处理**）：同名时而保留英文、时而消失——单点滑落 / 同段对错并存（如 Rio Grande、951 的 Keru）。
+  - `never_preserved`（**需人眼判断**）：从不以英文出现，含「全程被音译的真名」（Tenmei→天明、Rianu→里亚努）与「合法意译的术语」（Vulcan→瓦肯）两类混在一起。
+- `terms`：**反向漏译**——词汇表里有中文译名（`dst`、非 `keep_source`）的术语，却在个别段被留成了英文（`Starfleet`→星际舰队 全书都译了、唯独某段漏成 "Starfleet"）。
+- `strays`：**模型幻觉插入**——译文里出现、但该段原文里没有的英文 token（凭空写出的错名 `Vic`/`Sam`/`Sef`、顶替"the guard"的 `Lt`）。是**复查列表非合格门**：结果含解析粘连词（`theRio`→Rio）与一贯保留的外星术语，需人眼筛；真信号是无来由的短错名。
+- `merges`：原文里**超长 Latin 串或 camelCase 跳变**的丢空格粘连词（`thenaiskosfragment`、`speciesDraco`、`TheAlexandria`）；调小 `--min-merge-len` 可挖更短的。
+
+**推荐校对闭环**：`verify`（清掉表内硬伤）→ `scan --mode all`：
+1. `discover`：`inconsistent` 全改、`never_preserved` 人眼挑真名；
+2. `terms`：补回被漏成英文的术语译名；
+3. `strays`：揪出幻觉错名（`Vic`/`Sam`/`Lt` 类）；
+4. `merges`：收 OCR 粘连词。
+
+→ **把确认的真名/地名补进 `glossary.locked.json` 的 `characters`，保留英文的通名补进 `terms`（`keep_source:true`），有中文译名的术语也进 `terms`（带 `dst`）** → 再 `verify`（这下表全了，能守住；忽略代词省略类误报）。改已润色段一律用 `polish write` 以保住状态。
+
+> 经验：写自查脚本做名字比对时，先 `normalize_apostrophes`（弯/直撇号 `'`/`'` 统一），否则 `Mak'ala`、`Quark's`、`O'Brien` 会因撇号不同被误判为「消失」。verify/scan 内部已统一处理。
 
 ---
 
@@ -316,8 +352,11 @@ $PFX -m ainiee_translate.batch write work/cache.json work/translations_001.json
 # 导出
 $PFX -m ainiee_translate.export --cache work/cache.json --output out/ --input book.epub
 
-# 验证
+# 验证（执行锁定表：漏译 + 表内人名汉化；查 status 1+2）
 $PFX -m ainiee_translate.verify work/cache.json work/mybook.locked.json
+
+# 发现（补 verify 盲区：表外被音译/丢失的专名 + OCR 粘连词）
+$PFX -m ainiee_translate.scan work/cache.json --locked work/mybook.locked.json --mode all
 
 # 完整测试套件
 cd /Users/Anji/Desktop/ainiee-translate
@@ -343,6 +382,9 @@ A: 直接用 `batch write` 写入新的 `translated_text`（按 `text_index` 覆
 **Q: 如何跳过不需要翻译的段落（如纯数字章节号）？**
 A: 在 `translations.json` 中将 `translated_text` 设为源文原样（或空字符串后用 verify 检测），或在生成时 agent 判断后直接复制源文。
 
+**Q: `verify` 报 0 问题，但书里明明还有人名被音译 / 错译，为什么？**
+A: verify 只执行**锁定表里登记过的**人名，且无法识别张冠李戴、OCR 粘连词、未译残留等。「0 问题」常常只说明表内名字没丢。用 `scan --mode all` 发现表外被音译/丢失的专名（`inconsistent` 优先改，`never_preserved` 人眼挑真名）和粘连词，**把确认的真名补进词汇表后再 verify**。详见步骤 7 的「verify 的局限」。
+
 ---
 
 ## 附录 C：斜杠命令（菜单）
@@ -359,5 +401,6 @@ A: 在 `translations.json` 中将 `translated_text` 设为源文原样（或空�
 | `switch-prompt [模块]` / `show-prompt [模块]` | 切换 / 查看模块 |
 | `polish [批大小]` | 润色 pass |
 | `glossary` / `export <输入>` / `verify` / `status` | 词汇表 / 导出 / 校验 / 状态 |
+| `scan [discover\|terms\|strays\|merges\|all]` | 补 verify 盲区：表外被音译/丢失的专名(`discover`)、被漏译成英文的术语(`terms`)、幻觉插入的错名(`strays`)、OCR 粘连词(`merges`)|
 
 命令脚本路径用 `${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts`，并需用户设好 `AINIEE_PY`（装好依赖的 python；`AINIEE_REPO` 仅 PDF/Office 回退）。

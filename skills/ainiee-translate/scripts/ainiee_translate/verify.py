@@ -2,8 +2,32 @@
 Checks: empty translation (omission) + verbatim-name preservation.
 Language-agnostic: the name check fires for any glossary `render`/alias that
 appears verbatim in the source but is missing from the translation (most
-effective for Latin-script names; degrades gracefully for other scripts)."""
+effective for Latin-script names; degrades gracefully for other scripts).
+
+SCOPE / KNOWN LIMITS (read before trusting a clean run — see SKILL.md 步骤 7):
+- verify is a *glossary enforcer*, not a discovery tool: it only checks names
+  present in the locked glossary's `characters`. Names that were never added to
+  the glossary (common for secondary characters / places, or when the glossary
+  was seeded from a different book) are invisible to it. Use
+  `python -m ainiee_translate.scan` to DISCOVER proper nouns missing from the
+  glossary, and keep the glossary in sync with the book.
+- It checks segments that have been translated OR polished (status 1 and 2).
+  (Polished text is stored in `translated_text`, so both are covered.)
+- The name check is per-segment membership: if a name appears correctly once in
+  a segment AND is transliterated elsewhere in the *same* segment, verify sees
+  the name present and stays silent. `scan` re-checks this per occurrence.
+- It cannot tell a transliteration apart from an acceptable pronoun-drop or a
+  legitimate translation; after expanding the glossary, expect some
+  name_not_preserved hits on segments where the name was rightly rendered as a
+  pronoun. Eyeball each.
+- It does NOT detect: wrong-name substitutions for non-glossary names, OCR/parse
+  "merged word" artifacts, or untranslated source fragments left in the target.
+  `scan` covers the first two."""
 from .helpers import latin_boundary_search
+
+#: Statuses whose text is considered final/exportable and worth checking.
+#: 1 = TRANSLATED, 2 = POLISHED (polished text overwrites translated_text).
+CHECKED_STATUSES = (1, 2)
 
 
 def check_items(items: list[dict], locked: dict) -> list[dict]:
@@ -15,7 +39,7 @@ def check_items(items: list[dict], locked: dict) -> list[dict]:
                 names.append(n)
     names = list(dict.fromkeys(names))  # de-dup, keep order
     for it in items:
-        if it.get("translation_status") != 1:
+        if it.get("translation_status") not in CHECKED_STATUSES:
             continue
         src, tgt = it.get("source_text", ""), it.get("translated_text", "") or ""
         if src.strip() and not tgt.strip():
