@@ -177,7 +177,7 @@ ln -s "$PWD/ainiee-translate-skill/skills/ainiee-translate" ~/.codex/skills/aini
 
 [docs/specs/2026-05-20-ainiee-translate-skill-design.md](docs/specs/2026-05-20-ainiee-translate-skill-design.md)
 
-> 状态：v1.4.0 — **自包含**（内置解析/导出，无需 AiNiee 仓库；PDF/Office 可选回退）+ 跨平台（Claude Code / Codex）+ 模块化 + AiNiee profile 导入 + 导入已有项目/缓存 + 斜杠命令菜单 + 润色 pass（含多 agent 并行翻译）。
+> 状态：v1.4.1 — **自包含**（内置解析/导出，无需 AiNiee 仓库；PDF/Office 可选回退）+ 跨平台（Claude Code / Codex）+ 模块化 + AiNiee profile 导入 + 导入已有项目/缓存 + 斜杠命令菜单 + 润色 pass（含多 agent 并行翻译）。
 
 ## 许可证
 
