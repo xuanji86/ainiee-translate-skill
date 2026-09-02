@@ -5,6 +5,8 @@ LOCKED = {
     "characters": [
         {"canonical": "Kathryn Janeway", "render": "Kathryn Janeway", "aliases": ["Janeway", "Admiral Janeway"]},
         {"canonical": "Capril", "render": "Capril", "aliases": ["Vedek Capril"]},
+        {"canonical": "Yevir", "render": "Yevir", "aliases": ["Vedek Yevir"]},
+        {"canonical": "Archer", "render": "Archer", "aliases": ["Jonathan Archer"]},   # given name, NOT a title
         {"canonical": "Tom Paris", "render": "Tom Paris", "aliases": ["Paris"]},
         {"canonical": "Owen Paris", "render": "Owen Paris", "aliases": ["Paris"]},
     ],
@@ -25,13 +27,14 @@ def test_filter_keeps_only_what_the_group_mentions():
     assert [t["src"] for t in out["terms"]] == ["PADD"]
     assert out["non_translate"] == LOCKED["non_translate"]
     assert out["_meta"]["kept"] == {"characters": 1, "terms": 1}
-    assert out["_meta"]["total"]["characters"] == 4
+    assert out["_meta"]["total"]["characters"] == 6
 
 
 def test_lint_flags_title_alias_collision_shared_surname_and_terms():
     kinds = [i["kind"] for i in glossary.lint_locked(LOCKED)]
     assert "alias_has_title" in kinds        # "Admiral Janeway"
-    assert sum(1 for i in glossary.lint_locked(LOCKED) if i["kind"] == "alias_has_title") == 2   # + "Vedek Capril" (unknown title word)
+    titled = {i["alias"] for i in glossary.lint_locked(LOCKED) if i["kind"] == "alias_has_title"}
+    assert titled == {"Admiral Janeway", "Vedek Capril", "Vedek Yevir"}   # "Vedek" leads two people; "Jonathan" does not
     assert "alias_collides" in kinds         # "Paris" claimed by two people
     assert "shared_surname" in kinds
     assert "duplicate_term" in kinds         # Starfleet / starfleet

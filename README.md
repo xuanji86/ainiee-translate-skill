@@ -5,7 +5,7 @@
 **Agent 原生的长篇翻译管线** —— 让编码 agent 本身当翻译引擎，端到端译完一本书。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.7.0-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
+[![Version](https://img.shields.io/badge/version-1.7.1-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue.svg)](pyproject.toml)
 [![Tests](https://img.shields.io/badge/tests-86%20passing-brightgreen.svg)](tests/)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://claude.com/claude-code)

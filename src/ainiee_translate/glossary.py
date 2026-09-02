@@ -91,6 +91,16 @@ def lint_locked(locked: dict) -> list[dict]:
     chars = locked.get("characters", []) or []
     terms = locked.get("terms", []) or []
     owner: dict[str, str] = {}
+    term_srcs = {normalize_apostrophes(t.get("src") or "").lower() for t in terms}
+    # A leading token that prefixes the bare name of >= 2 different people is a title,
+    # not a given name ("Vedek Capril" / "Vedek Yevir"); so is one that is itself a term.
+    lead_count: dict[str, set] = {}
+    for c in chars:
+        canon_l = normalize_apostrophes(c.get("canonical") or "").lower()
+        for n in [c.get("canonical"), c.get("render")] + list(c.get("aliases") or []):
+            toks = normalize_apostrophes(n or "").split()
+            if len(toks) >= 2 and " ".join(t.lower() for t in toks[1:]) == canon_l:
+                lead_count.setdefault(toks[0].lower(), set()).add(canon_l)
     for c in chars:
         canon = c.get("canonical") or c.get("render") or ""
         if not (c.get("render") or "").strip():
@@ -100,7 +110,9 @@ def lint_locked(locked: dict) -> list[dict]:
                 continue
             toks = normalize_apostrophes(n).split()
             canon_toks = normalize_apostrophes(canon).lower().split()
-            titled = len(toks) >= 2 and [t.lower() for t in toks[1:]] == canon_toks
+            lead = toks[0].lower() if toks else ""
+            titled = (len(toks) >= 2 and [t.lower() for t in toks[1:]] == canon_toks
+                      and (lead in term_srcs or len(lead_count.get(lead, ())) >= 2))
             if toks and (toks[0].rstrip(".") in _HON_BARE or titled):
                 issues.append({"kind": "alias_has_title", "character": canon, "alias": n,
                                "hint": "verify demands aliases verbatim; a title that gets translated "
