@@ -321,7 +321,9 @@ v1.4.1 及更早版本的 epub 解析用 `soup.get_text(strip=True)` 抽文本�
 循环直到 `batch read-translated` 返回 `[]`：
 1. `<PFX> -m ainiee_translate.batch read-translated work/cache.json --size 100` → `{text_index, source_text, translated_text}` 数组。
 2. agent 按 `work/polish_prompt.md` + 锁定词汇表润色每段（**逐行 1:1、保留标记、人名/术语依词汇表**），写 `work/polished_NNN.json`（`{text_index, polished_text}`）。
-3. `<PFX> -m ainiee_translate.polish write work/cache.json work/polished_NNN.json`（写回并置 POLISHED）。
+3. `<PFX> -m ainiee_translate.polish write work/cache.json work/polished_NNN.json`（写回并置 POLISHED；同样过闸门，接受多文件与 JSONL）。
+
+**润色也能并行**（大书）：`batch split --stage polish --out-dir work/par` 把已译段按章切组，组文件带 `translated_text`；每个 subagent 边润边 append `par/polished_N.jsonl`（`{text_index, polished_text}`）；`batch validate grp_N_src.json polished_N.jsonl` 验收；`polish write work/cache.json work/par/polished_*.jsonl` 一次写回。`progress` 读到 `par/_stage.json` 里的 `polish` 会显示翻译/润色两条进度条，组状态 `written` = 全部已置 POLISHED。
 
 ---
 
@@ -499,7 +501,7 @@ A: verify 只执行**锁定表里登记过的**人名，且无法识别张冠李
 <PFX> -m ainiee_translate.progress work/cache.json --json      # 完整快照
 ```
 
-每组状态：`running`（jsonl 在长）→ `ready`（条数够且无空译/标记问题，可 `batch write`）或 `needs_fix`；jsonl 超过 `--stall` 秒（默认 180）没动就标 `stalled`；写回后变 `written`。面板底部给速率、剩余段的 ETA、卡死与可写回的组。
+每组状态：`running`（jsonl 在长）→ `ready`（条数够且无空译/标记问题，可 `batch write`）或 `needs_fix`；jsonl 超过 `--stall` 秒（默认 180）没动就标 `stalled`；写回后变 `written`。面板底部给速率、剩余段的 ETA、卡死与可写回的组。**润色阶段**（`split --stage polish` 产生的 `par/_stage.json`）：顶部多一条润色进度条，组文件识别 `polished_N.jsonl`，`written` 指全部已置 POLISHED。
 
 **statusline 接入**：`--watch` 与 `--line` 都会把一行摘要写到 `~/.ainiee-translate/progress.line`；在 statusline 脚本里加几行「文件存在且 5 分钟内更新过就拼进状态栏」，会话底栏就常驻进度，不用切窗口。示例（macOS `stat -f %m`）：
 

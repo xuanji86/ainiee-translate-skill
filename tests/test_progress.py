@@ -63,3 +63,27 @@ def test_render_and_rate(tmp_path):
     out.print(progress.render(s1, 6.0))
     txt = out.export_text()
     assert "Demo Book" in txt and "running" in txt and "ready" in txt and "ETA" in txt
+
+
+def test_polish_stage_snapshot_and_line(tmp_path):
+    work = _work(tmp_path)                                    # items 1-20 translated
+    par = work / "par"
+    for f in par.glob("*"):
+        f.unlink()
+    (par / "_stage.json").write_text(json.dumps({"stage": "polish"}), encoding="utf-8")
+    (par / "grp_1_src.json").write_text(json.dumps([{"text_index": i, "source_text": f"line {i}", "translated_text": f"译{i}"} for i in range(1, 11)]), encoding="utf-8")
+    (par / "grp_2_src.json").write_text(json.dumps([{"text_index": i, "source_text": f"line {i}", "translated_text": f"译{i}"} for i in range(11, 21)]), encoding="utf-8")
+    (par / "polished_1.jsonl").write_text("".join(json.dumps({"text_index": i, "polished_text": f"润{i}"}) + "\n" for i in range(1, 11)), encoding="utf-8")
+    snap = progress.snapshot(str(work / "cache.json"))
+    assert snap["stage"] == "polish"
+    assert snap["groups"][0]["state"] == "ready" and snap["groups"][1]["state"] == "pending"
+    from ainiee_translate import polish
+    polish.main(["write", str(work / "cache.json"), str(par / "polished_1.jsonl")])
+    snap = progress.snapshot(str(work / "cache.json"))
+    assert snap["groups"][0]["state"] == "written"            # all POLISHED now
+    assert snap["total"]["polished"] == 10
+    assert "润 10/60" in progress.one_line(snap)
+    from rich.console import Console
+    out = Console(record=True, width=120); out.print(progress.render(snap))
+    txt = out.export_text()
+    assert "润色阶段" in txt and "润色 10/60" in txt

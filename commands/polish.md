@@ -13,4 +13,6 @@ context: fork
 2. agent 按 `work/polish_prompt.md` + 锁定词汇表，对每段的 `translated_text` 做润色（**保持逐行 1:1、保留标记、人名/术语按词汇表**），写成 `work/polished_NNN.json`（`{text_index, polished_text}`）。
 3. `<PFX> -m ainiee_translate.polish write work/cache.json work/polished_NNN.json`（写回并置 POLISHED）。
 
+大书可并行：`batch split --stage polish --out-dir work/par` 切组 → subagent 各写 `par/polished_N.jsonl` → `batch validate` → `polish write work/cache.json work/par/polished_*.jsonl` 一次写回（详见技能 references/parallel_translation.md「润色也能并行」）。`/ainiee-translate:progress` 会显示润色进度。
+
 `<PFX>` = `PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" "$AINIEE_PY"`。完成后可 `/ainiee-translate:export` 导出（导出读 final_text，自动用润色后的文本）。

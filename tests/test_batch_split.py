@@ -121,3 +121,22 @@ def test_backup_retention(make_project, tmp_path, monkeypatch):
         batch.write_back(str(cache), [{"text_index": i, "translated_text": f"译{i}"}])
     assert len(list(tmp_path.glob("cache.json.bak.*"))) == 2
     assert (tmp_path / "cache.json.pre_manual").exists()            # manual backups untouched
+
+
+def test_split_polish_stage_carries_translation_and_stage_marker(tmp_path, capsys):
+    proj = _epub_like([30, 30], translated_prefix=30)          # ch1 translated, ch2 pending
+    cache = tmp_path / "cache.json"; cache_io.save_cache(proj, str(cache))
+    out = tmp_path / "pol"
+    batch.main(["split", str(cache), "--stage", "polish", "--target", "30", "--out-dir", str(out), "--context", "0"])
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["stage"] == "polish" and plan["pending"] == 30           # only the translated chapter
+    rows = json.load(open(out / "grp_1_src.json", encoding="utf-8"))
+    assert rows[0]["text_index"] == 1 and rows[0]["translated_text"] == "译1"
+    assert json.load(open(out / "_stage.json", encoding="utf-8"))["stage"] == "polish"
+
+
+def test_validate_accepts_polished_text_rows():
+    src = [{"text_index": 1, "source_text": "<i>A</i> b", "translated_text": "<i>甲</i> 乙"}]
+    assert batch.validate(src, [{"text_index": 1, "polished_text": "<i>甲</i>乙。"}])["ok"]
+    rep = batch.validate(src, [{"text_index": 1, "polished_text": "甲乙。"}])
+    assert not rep["ok"] and rep["hard"][0]["kind"] == "segment"

@@ -4,11 +4,13 @@ What is observable on disk while agents run (v1.6+ contract):
   work/cache.json            book-level status counts; changes only on `batch write`
   work/par/grp_N_src.json    what each parallel group was handed
   work/par/trans_N.jsonl     grows as the agent appends (every 10-50 segments)
+  work/par/polished_N.jsonl  same, for a parallel polish pass (par/_stage.json says which stage)
   work/par/newterms_N.txt    new proper nouns the agent kept verbatim
   work/progress.jsonl        write-back events appended by apply_writeback
 
 Per-group state machine:
-  written   every index of the group is already non-UNTRANSLATED in the cache
+  written   every index of the group is already past this stage in the cache
+            (translate: non-UNTRANSLATED; polish: POLISHED)
   pending   no trans file yet
   running   trans file incomplete, modified within --stall seconds
   stalled   trans file incomplete, silent longer than --stall seconds
@@ -72,6 +74,14 @@ def snapshot(cache_path: str, par_dir: str | None = None, stall_sec: int = STALL
     proj = cache_io.load_cache(cache_path)
     items = list(cache_io.iter_items(proj))
     by_idx = {it.text_index: it for it in items}
+    stage = "translate"
+    try:
+        with open(os.path.join(par_dir, "_stage.json"), encoding="utf-8") as f:
+            stage = json.load(f).get("stage", "translate")
+    except (OSError, json.JSONDecodeError):
+        pass
+    passed = ((lambda st: st == TranslationStatus.POLISHED) if stage == "polish"
+              else (lambda st: st != TranslationStatus.UNTRANSLATED))
     counts = {"all": len(items), "excluded": 0, "untranslated": 0, "translated": 0, "polished": 0}
     for it in items:
         s = it.translation_status
@@ -88,6 +98,7 @@ def snapshot(cache_path: str, par_dir: str | None = None, stall_sec: int = STALL
     counts["workable"] = workable
     counts["done"] = done
     counts["done_pct"] = round(100.0 * done / workable, 1) if workable else 100.0
+    counts["polished_pct"] = round(100.0 * counts["polished"] / workable, 1) if workable else 100.0
 
     groups = []
     for src_path in sorted(glob.glob(os.path.join(par_dir, "grp_*_src.json")), key=_group_number):
@@ -103,8 +114,10 @@ def snapshot(cache_path: str, par_dir: str | None = None, stall_sec: int = STALL
             k = (by_idx[i].extra or {}).get("item_id") if i in by_idx else None
             if k and (not chapters or chapters[-1] != k):
                 chapters.append(str(k))
-        trans_path = next((p for p in (os.path.join(par_dir, f"trans_{n}.jsonl"),
-                                       os.path.join(par_dir, f"trans_{n}.json")) if os.path.exists(p)), None)
+        names = (f"polished_{n}.jsonl", f"polished_{n}.json", f"trans_{n}.jsonl", f"trans_{n}.json")
+        if stage != "polish":
+            names = names[2:] + names[:2]
+        trans_path = next((p for p in (os.path.join(par_dir, nm) for nm in names) if os.path.exists(p)), None)
         g = {"group": n, "src": len(src_idx), "first_index": src_idx[0] if src_idx else None,
              "last_index": src_idx[-1] if src_idx else None, "chapters": chapters,
              "lines": 0, "bad_lines": 0, "age_sec": None, "seg_hard": 0, "dups": 0, "extra": 0,
@@ -113,8 +126,7 @@ def snapshot(cache_path: str, par_dir: str | None = None, stall_sec: int = STALL
         if os.path.exists(nt):
             with open(nt, encoding="utf-8") as f:
                 g["newterms"] = sum(1 for l in f if l.strip() and not l.startswith("#"))
-        written = bool(src_idx) and all(
-            i in by_idx and by_idx[i].translation_status != TranslationStatus.UNTRANSLATED for i in src_idx)
+        written = bool(src_idx) and all(i in by_idx and passed(by_idx[i].translation_status) for i in src_idx)
         if written:
             g["state"] = "written"
             g["lines"] = len(src_idx)
@@ -152,7 +164,7 @@ def snapshot(cache_path: str, par_dir: str | None = None, stall_sec: int = STALL
             except json.JSONDecodeError:
                 pass
     return {"ts": now, "project": proj.project_name or os.path.basename(os.path.dirname(work)),
-            "work": work, "stall_sec": stall_sec, "total": counts, "groups": groups, "events": events}
+            "work": work, "stage": stage, "stall_sec": stall_sec, "total": counts, "groups": groups, "events": events}
 
 
 # ------------------------------------------------------------- rate/ETA ----
@@ -192,6 +204,8 @@ def one_line(snap: dict, rate: float | None = None) -> str:
     name = re.sub(r"^Star Trek[_:]?\s*", "", snap["project"] or "").split(":")[0].strip() or "book"
     name = re.sub(r"^[A-Za-z ]+_\s*", "", name)[:24]
     parts = [f"📖 {name} {t['done']}/{t['workable']} ({t['done_pct']:.0f}%)"]
+    if snap.get("stage") == "polish" or t.get("polished"):
+        parts.append(f"润 {t['polished']}/{t['workable']} ({t['polished_pct']:.0f}%)")
     live = [g for g in snap["groups"] if g["state"] in ("running", "stalled")]
     other = {}
     for g in snap["groups"]:
@@ -237,11 +251,15 @@ def render(snap: dict, rate: float | None = None):
     head.add_column(ratio=3)
     head.add_column(ratio=2, justify="right")
     bar = ProgressBar(total=max(t["workable"], 1), completed=t["done"], width=40)
+    polishing = snap.get("stage") == "polish" or t.get("polished", 0) > 0
     last = snap["events"][-1] if snap["events"] else None
     last_txt = (f"last write {int((snap['ts'] - last['ts']) // 60)}m ago: applied {last['applied']}"
                 + (f", rejected {last['rejected']}" if last.get("rejected") else "")) if last else "no write logged"
-    head.add_row(RGroup(Text(f"{t['done']}/{t['workable']} segments  ({t['done_pct']}%)   pending {t['untranslated']}"), bar),
-                 Text(last_txt, style="dim"))
+    left = [Text(f"翻译 {t['done']}/{t['workable']}  ({t['done_pct']}%)   pending {t['untranslated']}"), bar]
+    if polishing:
+        left += [Text(f"润色 {t['polished']}/{t['workable']}  ({t['polished_pct']}%)   待润色 {t['translated']}"),
+                 ProgressBar(total=max(t["workable"], 1), completed=t["polished"], width=40, style="magenta", complete_style="magenta")]
+    head.add_row(RGroup(*left), Text(last_txt, style="dim"))
 
     from rich import box
     tbl = Table(expand=True, box=box.SIMPLE_HEAD, pad_edge=False, collapse_padding=True)
@@ -280,7 +298,8 @@ def render(snap: dict, rate: float | None = None):
     if ready:
         foot_parts.append(f"[bold cyan]ready to write: grp {', '.join(ready)}[/]")
     foot = Text.from_markup("   ".join(foot_parts)) if foot_parts else Text("")
-    return Panel(RGroup(head, Text(""), tbl, Text(""), foot), title=f"[bold]{snap['project']}[/]",
+    title = f"[bold]{snap['project']}[/]" + ("  [magenta]润色阶段[/]" if snap.get("stage") == "polish" else "")
+    return Panel(RGroup(head, Text(""), tbl, Text(""), foot), title=title,
                  subtitle=time.strftime("%H:%M:%S", time.localtime(snap["ts"])))
 
 

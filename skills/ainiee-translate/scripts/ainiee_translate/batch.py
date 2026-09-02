@@ -2,7 +2,8 @@
 
   read / read-translated   next batch for the agent (translate / polish)
   split                    chapter-aligned, size-balanced groups for parallel agents
-                           (+ per-group source files and preceding-context files)
+                           (+ per-group source files and preceding-context files);
+                           --stage polish cuts TRANSLATED segments for a parallel polish pass
   validate                 check one group's output against its source BEFORE writing
   write                    gate + write one or many translation files (JSON or JSONL)
                            in a single lock/backup/load/save
@@ -67,6 +68,11 @@ def load_many(paths: list[str]) -> list[dict]:
     for p in paths:
         rows.extend(load_translations(p))
     return rows
+
+
+def row_text(r: dict) -> str:
+    """The agent's output text: `polished_text` for polish rows, else `translated_text`."""
+    return r["polished_text"] if "polished_text" in r else r.get("translated_text", "")
 
 
 def make_check(allow_tag_mismatch: bool = False):
@@ -156,13 +162,18 @@ def plan_groups(project, target: int = 300, status: int = TranslationStatus.UNTR
     return groups
 
 
-def split_project(project, target: int, out_dir: str | None, context: int) -> dict:
-    groups = plan_groups(project, target)
+STAGE_STATUS = {"translate": TranslationStatus.UNTRANSLATED, "polish": TranslationStatus.TRANSLATED}
+
+
+def split_project(project, target: int, out_dir: str | None, context: int, stage: str = "translate") -> dict:
+    groups = plan_groups(project, target, STAGE_STATUS[stage])
     all_items = list(cache_io.iter_items(project))
     pos = {it.text_index: i for i, it in enumerate(all_items)}
     rows = []
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
+        with open(os.path.join(out_dir, "_stage.json"), "w", encoding="utf-8") as f:
+            json.dump({"stage": stage, "target": target, "context": context, "groups": len(groups)}, f)
     for n, g in enumerate(groups, 1):
         items = g["items"]
         row = {"group": n, "count": len(items),
@@ -171,8 +182,11 @@ def split_project(project, target: int, out_dir: str | None, context: int) -> di
         if out_dir:
             src_path = os.path.join(out_dir, f"grp_{n}_src.json")
             with open(src_path, "w", encoding="utf-8") as f:
-                json.dump([{"text_index": it.text_index, "source_text": it.source_text} for it in items],
-                          f, ensure_ascii=False, indent=1)
+                rows_out = [{"text_index": it.text_index, "source_text": it.source_text} for it in items]
+                if stage == "polish":                       # the polisher needs the current translation too
+                    for r, it in zip(rows_out, items):
+                        r["translated_text"] = it.translated_text or ""
+                json.dump(rows_out, f, ensure_ascii=False, indent=1)
             row["src_file"] = src_path
             if context > 0:
                 p = pos[items[0].text_index]
@@ -190,7 +204,7 @@ def split_project(project, target: int, out_dir: str | None, context: int) -> di
                               f, ensure_ascii=False, indent=1)
                 row["ctx_file"] = ctx_path
         rows.append(row)
-    return {"target": target, "pending": sum(r["count"] for r in rows), "groups": rows}
+    return {"stage": stage, "target": target, "pending": sum(r["count"] for r in rows), "groups": rows}
 
 
 # ------------------------------------------------------------ validate ----
@@ -213,7 +227,7 @@ def validate(src_rows: list[dict], trans_rows: list[dict], allow_tag_mismatch: b
         ti = int(r["text_index"])
         if ti not in src_by:
             continue
-        h, s = audit.lint_pair(src_by[ti], r.get("translated_text", ""), allow_tag_mismatch)
+        h, s = audit.lint_pair(src_by[ti], row_text(r), allow_tag_mismatch)
         if h:
             seg_hard.append({"text_index": ti, "reasons": h})
         for c in s:
@@ -247,6 +261,8 @@ def main(argv=None):
     sp.add_argument("--out-dir", help="also write grp_N_src.json (+ grp_N_ctx.json) here")
     sp.add_argument("--context", type=int, default=20,
                     help="preceding segments to put in grp_N_ctx.json (0 = none)")
+    sp.add_argument("--stage", choices=["translate", "polish"], default="translate",
+                    help="translate: pending segments (default); polish: TRANSLATED segments, src rows carry translated_text")
 
     v = sub.add_parser("validate", help="Check a group's translation file against its source file")
     v.add_argument("src_json")
@@ -270,7 +286,7 @@ def main(argv=None):
         print(json.dumps(read_translated_batch(project, size=a.size), ensure_ascii=False))
     elif a.cmd == "split":
         project = cache_io.load_cache(a.cache_path)
-        print(json.dumps(split_project(project, a.target, a.out_dir, a.context), ensure_ascii=False, indent=1))
+        print(json.dumps(split_project(project, a.target, a.out_dir, a.context, a.stage), ensure_ascii=False, indent=1))
     elif a.cmd == "validate":
         try:
             src = load_translations(a.src_json)

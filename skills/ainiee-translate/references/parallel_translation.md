@@ -137,6 +137,21 @@ done
 
 `translation_status=7` 的段是排除项，无需翻译、不必写回。全书译完的判据是 `batch read` 返回 `[]`。
 
+## 润色也能并行
+
+同一套编排换一个阶段：
+
+```bash
+<PFX> -m ainiee_translate.batch split <PROJ>/work/cache.json --stage polish --target 300 --out-dir <PROJ>/work/par --context 20
+#   组文件 grp_N_src.json 带 translated_text（润色 agent 读原文 + 初译）；par/_stage.json 记下 stage=polish
+#   … subagent 按 work/polish_prompt.md 边润边 append par/polished_N.jsonl，每行 {"text_index","polished_text"} …
+<PFX> -m ainiee_translate.batch validate <PROJ>/work/par/grp_N_src.json <PROJ>/work/par/polished_N.jsonl   # 同一套闸门
+<PFX> -m ainiee_translate.polish write <PROJ>/work/cache.json <PROJ>/work/par/polished_*.jsonl            # 一次写回，状态→POLISHED
+```
+
+`progress` 会自动切到润色视图（两条总进度条，组识别 `polished_N.jsonl`，`written` = 全部已 POLISHED）。
+润色 agent 的红线与翻译相同：锁定术语零变动、标记成对、1:1；另加「不改事实只改表达」。
+
 ## subagent prompt 模板（按组填 {N}/{RANGE}/{COUNT}）
 
 > 你是把一本小说从源语言译成目标语言的文学译者，负责第 {N} 组（{RANGE}，{COUNT} 段）。前几章已译好并经用户确认，你的产出必须与既有风格**完全一致**。
