@@ -1,117 +1,221 @@
+<div align="center">
+
 # ainiee-translate
 
-独立、**Agent 原生**的小说翻译系统（**任意源 → 目标语言**，不限中译）——工作方式类似 [AiNiee](https://github.com/NEKOparapa/AiNiee)，但**不依赖 AiNiee 应用运行**（无 GUI / HTTP / MCP）。由**编码 agent 本身（Claude Code / Codex）**充当翻译引擎，跑在订阅额度上，而非按 token 计费的外部 API。
+**Agent 原生的长篇翻译管线** —— 让编码 agent 本身当翻译引擎，端到端译完一本书。
+
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-1.5.0-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
+[![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue.svg)](pyproject.toml)
+[![Tests](https://img.shields.io/badge/tests-61%20passing-brightgreen.svg)](tests/)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://claude.com/claude-code)
+[![Codex](https://img.shields.io/badge/Codex-compatible-333.svg)](skills/ainiee-translate/references/codex-tools.md)
+
+[安装](#安装) · [快速开始](#快速开始) · [工作原理](#工作原理) · [命令](#命令) · [模块](#模块) · [质量闭环](#质量闭环)
+
+</div>
+
+---
+
+## 这是什么
+
+工作方式类似 [AiNiee](https://github.com/NEKOparapa/AiNiee)，但**不跑 AiNiee 应用**（无 GUI / HTTP / MCP）：翻译由**编码 agent 自己**（Claude Code / Codex）完成，一组确定性 Python 脚本负责解析、批次调度、词汇表锁定、写回与导出。
+
+支持**任意源语言 → 任意目标语言**，不限中译。
+
+### 与直连 API 翻译的区别
+
+|  | 经外部 API | ainiee-translate |
+|---|---|---|
+| 计费 | 按 token，整本约 1–2M token | 走订阅额度，整本约 **~302K token**（约 **5×** 更省——省在不重发提示词/术语表） |
+| 术语一致性 | 每批各自为政，易漂移 | 全书共用一张**锁定词汇表**，机械校验 |
+| 中断恢复 | 自行处理 | 状态驱动（`translation_status`），重跑自动续上 |
+| 富文本 | 常被压平 | 斜体/粗体按源书写法**原样还原** |
+| 质量兜底 | 无 | `verify` + `scan` 四种发现模式 + 逐批时间戳备份 |
+
+---
 
 ## 安装
 
-**前置依赖**：本版本**自包含**——解析/导出已内置（`skills/ainiee-translate/scripts/ainiee_translate/_vendor/`，改写自 [AiNiee](https://github.com/NEKOparapa/AiNiee)、剥离其 App 框架），**无需克隆 AiNiee 仓库**。只需一个装了几个轻量库的 Python（≥3.12）：
+**自包含**：解析/导出模块已内置（`skills/ainiee-translate/scripts/ainiee_translate/_vendor/`，改写自 AiNiee、剥离其 App 框架），**无需克隆 AiNiee 仓库**。
 
 ```bash
 python3 -m venv ~/.venvs/ainiee-translate
-~/.venvs/ainiee-translate/bin/pip install msgspec beautifulsoup4 lxml rich openpyxl polib python-pptx chardet
+~/.venvs/ainiee-translate/bin/pip install \
+  msgspec beautifulsoup4 lxml rich openpyxl polib python-pptx chardet
 ```
 
-自带格式：epub / txt / md / docx / xlsx / pptx / csv / srt / vtt / ass / lrc / po / json 系列等。**仅 PDF 与 Windows Office 转换未自包含**——要用时设 `AINIEE_REPO` 回退到 AiNiee。安装技能后设 `SKILL_DIR`（技能目录）与 `AINIEE_PY`（上面 venv 的 python）即可。
+自带 15 种格式：`epub` `txt` `md` `docx` `xlsx` `pptx` `csv` `srt` `vtt` `ass` `lrc` `po` `json` `rpy` `trans`。
+仅 **PDF 与 Windows Office 转换**未自包含——需要时设 `AINIEE_REPO` 回退到 AiNiee。
 
-### 方式一：作为 Claude Code 插件安装（推荐）
+### 方式一：Claude Code 插件（推荐）
 
 ```text
 /plugin marketplace add xuanji86/ainiee-translate-skill
 /plugin install ainiee-translate@ainiee-translate
 ```
 
-之后按 `skills/ainiee-translate/SKILL.md`「前置依赖与安装」设三个环境变量（`SKILL_DIR` 指向已安装的技能目录、`AINIEE_REPO` 指向本地 AiNiee 仓库、`AINIEE_PY` 指向 AiNiee venv 的 python），即可对它说「用 agent 翻译这本 epub」。更新：`/plugin marketplace update ainiee-translate` 后 `/reload-plugins`。
+更新：`/plugin marketplace update ainiee-translate` 后 `/reload-plugins`。
 
-### 方式二：手动安装（不走插件）
+### 方式二：手动装为技能
 
 ```bash
 git clone https://github.com/xuanji86/ainiee-translate-skill.git
-cp -r ainiee-translate-skill/skills/ainiee-translate ~/.claude/skills/    # 个人技能目录
+cp -r ainiee-translate-skill/skills/ainiee-translate ~/.claude/skills/
 ```
 
-技能自带管道脚本（`skills/ainiee-translate/scripts/`），无需 `pip install`；同样设好上面三个环境变量即可。
+### 方式三：Codex（OpenAI Codex CLI）
 
-### 方式三：在 Codex（OpenAI Codex CLI）中使用
-
-SKILL.md 是跨平台标准格式，可直接装进 Codex 的技能目录（`~/.codex/skills`），Codex 会自动发现：
+SKILL.md 是跨平台标准格式，Codex 会自动发现：
 
 ```bash
 git clone https://github.com/xuanji86/ainiee-translate-skill.git
 ln -s "$PWD/ainiee-translate-skill/skills/ainiee-translate" ~/.codex/skills/ainiee-translate
 ```
 
-设好 `SKILL_DIR`（指向 `~/.codex/skills/ainiee-translate`）、`AINIEE_REPO`、`AINIEE_PY`，对 Codex 说「用 ainiee-translate 翻译这本 epub」即可。工具名对照（Bash→shell、Task→spawn_agent…）、多 agent 并行所需的 `multi_agent` 配置见 [`skills/ainiee-translate/references/codex-tools.md`](skills/ainiee-translate/references/codex-tools.md)。
+工具名对照（Bash→shell、Task→spawn_agent…）与多 agent 并行配置见
+[`references/codex-tools.md`](skills/ainiee-translate/references/codex-tools.md)。
 
-## 它做什么
+### 环境变量
 
-- 复用 AiNiee 的 `ModuleFolders.Domain` 解析/导出模块**当库**（epub 等格式），不跑其应用。
-- 取 AiNiee 公共术语表为 seed，**清洗并锁定**一张工作权威表（去重、归一、人名/地名分类）。
-- 由 agent 按 **AiNiee 原生提示词 ＋ 用户自定义提示词（自己写规则，如人名/头衔/风格，复用 AiNiee 配置或手写）＋ 锁定表** 逐章翻译，写回缓存并导出成品。
-- 状态驱动、可恢复、可跨时间窗；三种介入模式（抽样自动 / 每章过目 / 全自动）。
-- **导入已有项目**：直接导入 AiNiee 的工程缓存（`AinieeCacheData.json`）或既有 `cache.json`，接着续翻 / 润色 / 校验 / 重新导出（缓存自带原书路径，导出无需再指）。
-- **模块化**：把整套任务设置（翻译/润色提示词、词汇表、禁翻表、风格、源/目标语言）存成可复用**模块**（`~/.ainiee-translate/modules/`），一个插件应对不同书；可**一键从 AiNiee profile 导入**。
-- **命令菜单**：装成插件后用 `/ainiee-translate:*` 斜杠命令完成导入/切换模块、生成提示词、翻译、**润色**、导出、校验等（`/ainiee-translate:menu` 看清单）。
+| 变量 | 必需 | 说明 |
+|---|---|---|
+| `SKILL_DIR` | ✅ | 技能安装目录 |
+| `AINIEE_PY` | ✅ | 上面 venv 的 python |
+| `AINIEE_REPO` | — | **可选**，仅 PDF / Windows Office 回退时需要 |
+| `AINIEE_TRANSLATE_HOME` | — | 模块根目录，默认 `~/.ainiee-translate` |
+
+自检：
+
+```bash
+PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
+  -c "from ainiee_translate import io_dispatch; print('formats OK:', io_dispatch.supported_extensions())"
+```
+
+---
+
+## 快速开始
+
+装成插件后，一句话即可：
+
+```text
+/ainiee-translate:translate ~/books/mybook.epub star-trek
+```
+
+或对 agent 说「用 agent 翻译这本 epub」。它会走完 解析 → 词汇表 → 逐章翻译 → 导出 → 校验，
+并在开始前与你确认**介入模式**：
+
+| 模式 | 行为 | 适用 |
+|---|---|---|
+| **A 抽样自动** | 先译约 1 章给你确认风格，之后自动跑完；遇表外歧义实体停下询问 | 首次翻新书（默认）|
+| **B 每章过目** | 每章译完给你点头后才写回 | 需要细粒度监控 |
+| **C 全自动** | 一气跑完，歧义记入 `needs_review` 最后统一报告 | 风格已熟 |
+
+---
+
+## 工作原理
+
+```
+       ┌─────────┐   ┌──────────┐   ┌───────────┐   ┌────────┐   ┌────────┐
+书 ──▶ │  parse  │──▶│ glossary │──▶│  translate│──▶│ polish │──▶│ export │──▶ 成品
+       └─────────┘   └──────────┘   └───────────┘   └────────┘   └────────┘
+            │             │            ▲     │                        ▲
+       cache.json    锁定词汇表    batch read  batch write        original_html
+       (含原书 HTML)   (人工复核)      │     │                    (结构/标签还原)
+                                      └──┬──┘
+                                    agent = 翻译引擎
+                                  (规则 + 词汇表 + 提示词)
+                                         │
+                              ┌──────────┴──────────┐
+                              │  verify  ·  scan    │  质量闭环
+                              └─────────────────────┘
+```
+
+- **状态驱动**：每段有 `translation_status`（未译/已译/已润色/排除）。`batch read` 只返回未译段，
+  所以中断后重跑天然续上，无需记录进度。
+- **每批写回前自动时间戳备份**：`cache.json.bak.YYYYMMDD_HHMMSS`。
+- **agent 即引擎**：不调用任何外部翻译 API，质量由 agent 实时应用
+  「AiNiee 原生提示词 ＋ 用户自定义提示词 ＋ 锁定词汇表」保证。
+- **富文本保真**：源书的行内斜体/粗体在 `source_text` 里统一成 `<i>…</i>` / `<b>…</b>` 标记，
+  导出时按该段原文的实际写法（`<i>`、`<em>`、`<span class="italic">` …）还原。
+
+### 关键特性
+
+- **导入已有项目** —— 直接接管 AiNiee 工程缓存（`AinieeCacheData.json`）或既有 `cache.json`，续翻 / 润色 / 校验 / 重新导出。
+- **模块化** —— 整套任务设置（提示词、词汇表、禁翻表、风格、语言对）打包成可复用模块，一个插件应对不同书；支持从 AiNiee profile 一键导入。
+- **多 agent 并行** —— 风格锁定后可派多个 subagent 并发翻不同章节（实测 11 章 1704 段 / 7 agent / ~9 分钟）。铁律：subagent 只产出译文 JSON，**由主控串行写回**。
+- **润色 pass** —— 可选二次加工，状态 `TRANSLATED → POLISHED`，导出自动采用润色文本。
+
+---
 
 ## 命令
 
-分两层：**斜杠命令**（装成插件后用，`/ainiee-translate:*`）和它们底层调用的 **Python CLI**（Codex / 手动 / 调试用）。多数命令需先设好 `AINIEE_REPO`、`AINIEE_PY`、`SKILL_DIR` 三个环境变量（见上「安装」）。
+两层：**斜杠命令**（插件内用）和其底层 **Python CLI**（Codex / 手动 / 调试）。
 
-### 斜杠命令（13 个）
+### 斜杠命令（15 个）
 
 **翻译流程**
 
-| 命令 | 用法 | 作用 |
-|------|------|------|
-| `/ainiee-translate:translate` | `<输入文件> [模块名]` | 端到端翻译一本 epub/txt（解析→词汇表→翻译→导出→校验）|
-| `/ainiee-translate:import-project` | `[list \| <AinieeCacheData.json 或项目ID> <项目目录>]` | 导入已有项目（AiNiee 缓存或既有 cache.json）继续翻译/润色/校验/导出 |
-| `/ainiee-translate:glossary` | `[--config PATH] [--analysis PATH]` | 从 AiNiee 配置/profile 构建并锁定工作词汇表 |
-| `/ainiee-translate:polish` | `[批大小]` | 对已翻译文本跑润色 pass（按模块润色提示词二次加工）|
-| `/ainiee-translate:export` | `<原始输入文件>` | 把翻译好的缓存导出为成品 epub/txt |
-| `/ainiee-translate:verify` | （无参数）| 校验残留规则违规（漏译、人名未保留）|
-| `/ainiee-translate:status` | （无参数）| 查看项目状态（已绑模块 / 未译·已译计数 / 续跑点）|
+| 命令 | 参数 | 作用 |
+|---|---|---|
+| `/ainiee-translate:translate` | `<输入> [模块]` | 端到端翻译一本书 |
+| `/ainiee-translate:import-project` | `[list \| <缓存或项目ID> <项目目录>]` | 导入已有项目继续处理 |
+| `/ainiee-translate:glossary` | `[--config P] [--analysis P]` | 构建并锁定工作词汇表 |
+| `/ainiee-translate:polish` | `[批大小]` | 润色 pass |
+| `/ainiee-translate:export` | `<原始输入文件>` | 导出成品 |
+| `/ainiee-translate:status` | — | 项目状态（模块 / 计数 / 续跑点）|
+
+**质量与修复**
+
+| 命令 | 参数 | 作用 |
+|---|---|---|
+| `/ainiee-translate:verify` | — | 校验漏译、锁定人名未保留 |
+| `/ainiee-translate:scan` | `[discover\|terms\|strays\|merges\|all]` | 补 verify 盲区（见[质量闭环](#质量闭环)）|
+| `/ainiee-translate:repair` | — | 修复存量 epub 项目的行内标记与空格 |
 
 **模块与提示词**
 
-| 命令 | 用法 | 作用 |
-|------|------|------|
-| `/ainiee-translate:import-profile` | `<profile.json> <模块名>` | 导入 AiNiee profile/config 为可复用模块 |
-| `/ainiee-translate:module` | `<list\|show\|create\|load> [名字] [--work 项目目录]` | 管理模块（列出/查看/新建/加载进项目）|
-| `/ainiee-translate:switch-prompt` | `[模块名]` | 切换当前项目使用的模块/提示词 |
-| `/ainiee-translate:show-prompt` | `[模块名]` | 查看模块的提示词与词汇表摘要 |
-| `/ainiee-translate:gen-prompt` | `<translate\|polish> [模块名]` | 让 agent 帮你起草翻译/润色提示词（AiNiee 风格）写进模块 |
-| `/ainiee-translate:menu` | （无参数）| 显示命令菜单 |
+| 命令 | 参数 | 作用 |
+|---|---|---|
+| `/ainiee-translate:import-profile` | `<profile.json> <模块>` | AiNiee profile → 模块 |
+| `/ainiee-translate:module` | `<list\|show\|create\|load> [名] [--work D]` | 模块管理 |
+| `/ainiee-translate:switch-prompt` | `[模块]` | 切换当前项目的模块 |
+| `/ainiee-translate:show-prompt` | `[模块]` | 查看提示词与词汇表摘要 |
+| `/ainiee-translate:gen-prompt` | `<translate\|polish> [模块]` | 让 agent 起草提示词 |
+| `/ainiee-translate:menu` | — | 命令菜单 |
 
 ### 底层 Python CLI
 
-前缀 `<PFX>` = `AINIEE_REPO="$AINIEE_REPO" PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY"`，调用形如 `<PFX> -m ainiee_translate.<模块> …`：
+前缀 `<PFX>` = `PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY"`，形如 `<PFX> -m ainiee_translate.<模块> …`：
 
-| 模块 | 用法 | 作用 |
-|------|------|------|
-| `parse` | `--input <书> --type AutoType --out <cache.json>` | 解析 epub/txt 成缓存 |
-| `glossary` | `--config <config.json> [--analysis <路径>] --out <locked.json>` | 构建锁定词汇表 |
-| `batch` | `read <cache> --size N` · `read-translated <cache> --size N` · `write <cache> <译文.json>` | 取未译批 / 取待润色批 / 写回译文 |
-| `prompt` | `--config <config> [--out F] [--translate-system\|--polish]` | 汇总用户自定义/系统/润色提示词 |
-| `module` | `list` · `show <名>` · `create <名> [--source-language X --target-language Y]` · `load <名> [--work DIR]` | 模块管理 |
-| `profile` | `import --profile <p.json> --name <名> [--target-language X] [--force]` | profile → 模块 |
-| `project` | `list [--ainiee-cache-dir DIR]` · `import (--ainiee <ID>\|--cache <路径>) --work <目录>` | 列出/导入已有项目 |
-| `polish` | `write <cache> <润色.json>` | 写回润色结果（状态→POLISHED）|
-| `export` | `--cache <cache> --output <目录> --input <原书>` | 导出成品 |
-| `verify` | `<cache> <locked.json>` | 校验漏译/人名未保留 |
+| 模块 | 用法 |
+|---|---|
+| `parse` | `--input <书> --type AutoType --out <cache.json>` |
+| `glossary` | `--config <config.json> [--analysis <路径>] --out <locked.json>` |
+| `batch` | `read <cache> --size N` · `read-translated <cache> --size N` · `write <cache> <译文.json>` |
+| `polish` | `write <cache> <润色.json>` |
+| `prompt` | `--config <config> [--out F] [--translate-system\|--polish]` |
+| `module` | `list` · `show <名>` · `create <名> [--source-language X --target-language Y]` · `load <名> [--work D]` |
+| `profile` | `import --profile <p.json> --name <名> [--target-language X] [--force]` |
+| `project` | `list [--ainiee-cache-dir D]` · `import (--ainiee <ID>\|--cache <路径>) --work <目录>` |
+| `export` | `--cache <cache> --output <目录> --input <原书>` |
+| `verify` | `<cache> <locked.json>` |
+| `scan` | `<cache> --locked <locked.json> --mode all` |
+| `repair` | `<cache> [--apply] [--list-marked]` |
 
-## 构建模块
+---
 
-**模块**把一整套任务设置（翻译/润色提示词、词汇表、禁翻表、风格、源/目标语言）打包成一个可复用、可切换的文件夹，让同一个插件应对不同书。模块默认放在 `~/.ainiee-translate/modules/<名字>/`（可用环境变量 `AINIEE_TRANSLATE_HOME` 覆盖根目录）。
+## 模块
 
-### 模块目录结构
+**模块**把一整套任务设置打包成可复用、可切换的文件夹，默认在 `~/.ainiee-translate/modules/<名字>/`：
 
 ```
-~/.ainiee-translate/modules/<名字>/
-  module.json          # 元数据 + 清单（名字、源/目标语言、各开关、来源）
-  translate_prompt.md  # 翻译提示词（AiNiee 风格；加载后即项目里的 user_prompt.md）
-  polish_prompt.md     # 润色提示词（可选；没有则不提供润色）
-  glossary.locked.json # 锁定词汇表 {characters, terms, non_translate}
-  style.md             # 写作风格/世界观（可选，自由文本）
-  examples.json        # few-shot 示例（可选）
+module.json          # 元数据 + 清单（语言对、各开关、来源）
+translate_prompt.md  # 翻译提示词（加载后即项目里的 user_prompt.md）
+polish_prompt.md     # 润色提示词（可选；没有则不提供润色）
+glossary.locked.json # 锁定词汇表 {characters, terms, non_translate}
+style.md             # 写作风格/世界观（可选）
+examples.json        # few-shot 示例（可选）
 ```
 
 `glossary.locked.json` 的形状：
@@ -119,68 +223,109 @@ ln -s "$PWD/ainiee-translate-skill/skills/ainiee-translate" ~/.codex/skills/aini
 ```json
 {
   "characters": [
-    {"canonical": "James Marlow", "render": "James Marlow", "aliases": ["Marlow"], "gender": "M", "note": "舰长"}
+    {"canonical": "James Marlow", "render": "James Marlow",
+     "aliases": ["Marlow"], "gender": "M", "note": "舰长"}
   ],
   "terms": [
     {"src": "Korin", "dst": "科林", "category": "race"},
     {"src": "Highmark", "dst": "Highmark", "keep_source": true, "category": "place"}
   ],
-  "non_translate": [{"marker": "<i>", "category": "tag"}]
+  "non_translate": [{"marker": "{0}", "category": "placeholder"}]
 }
 ```
 
-- `characters[].render`：人名最终写法（人名通常 `render == canonical`，即保留原文）。
-- `terms[].keep_source: true`：该词保持原文不译（`dst == src` 时自动标记）。
-- `non_translate[].marker`：原样保留的标记/占位符。
+- `characters[].render` —— 人名最终写法（保留原文时 `render == canonical`）。
+- `terms[].keep_source: true` —— 该词保持原文不译。
+- `non_translate[].marker` —— 原样保留的标记/占位符。
 
 ### 三种建法
 
-**① 从 AiNiee profile 导入（最快）** —— 一把梭把语言、翻译/润色提示词、术语表、禁翻表全提进来：
+**① 从 AiNiee profile 导入（最快）** —— 语言、提示词、术语表、禁翻表一把梭：
 
 ```bash
 <PFX> -m ainiee_translate.profile import --profile <profile.json> --name mybook
-# 或插件里：/ainiee-translate:import-profile <profile.json> mybook
-<PFX> -m ainiee_translate.module show mybook        # 检查导入结果
+<PFX> -m ainiee_translate.module show mybook          # 检查导入结果
 ```
 
-**② 新建空模块再填** —— 适合从零手写规则：
+**② 新建空模块再填** —— 从零手写规则：
 
 ```bash
-<PFX> -m ainiee_translate.module create mybook --source-language English --target-language 简体中文
-# 然后编辑 ~/.ainiee-translate/modules/mybook/ 下的：
-#   translate_prompt.md   写你的翻译规则（人名/头衔/风格/标点等）
-#   polish_prompt.md      写润色规则（可留空 = 不润色）
-#   glossary.locked.json  填角色/术语/禁翻
+<PFX> -m ainiee_translate.module create mybook \
+  --source-language English --target-language 简体中文
 ```
-不想手写提示词？用 `/ainiee-translate:gen-prompt translate mybook`（或 `polish`）让 agent 访谈你后起草，直接写进模块。
 
-**③ 直接放文件** —— 按上面的目录结构手动建文件夹也行（`module.json` 可参照已有模块）。
+不想手写提示词？`/ainiee-translate:gen-prompt translate mybook` 让 agent 访谈你后起草。
 
-### 加载 / 切换
+**③ 直接放文件** —— 按上面结构手建文件夹亦可。
 
-把模块拷进某个翻译项目（自包含），翻译时即生效：
+### 加载
 
 ```bash
 <PFX> -m ainiee_translate.module load mybook --work ~/my-project
-# 或插件里：/ainiee-translate:switch-prompt mybook
 ```
 
-加载会把模块的 `translate_prompt.md`→`user_prompt.md`、`polish_prompt.md`、`glossary.locked.json` 拷进 `~/my-project/work/`（已存在则先时间戳备份），之后 `translate` / `polish` 自动遵循「AiNiee 原生原则 ＋ 模块提示词 ＋ 锁定词汇表」。`module list` 看所有模块，`/ainiee-translate:show-prompt mybook` 看摘要。
+把模块的提示词与词汇表拷进项目 `work/`（已存在先时间戳备份）。
 
-> 模块可放进独立 git 仓库分发：`git clone <repo> ~/.ainiee-translate/modules/<名字>` 即装。
+> 模块可独立成 git 仓库分发：`git clone <repo> ~/.ainiee-translate/modules/<名字>` 即装。
 
-## 为什么
+---
 
-实测：整本约 ~302K token，对比经 API 跑同书的 1–2M，约 **5× 更省**（省在不重发提示词/术语）；质量与原管线相当，**全局一致性更好**（去重、术语一致、抓漏译）。
+## 质量闭环
 
-## 设计文档
+翻完不等于译对。本管线提供三件工具，**分工明确**：
 
-[docs/specs/2026-05-20-ainiee-translate-skill-design.md](docs/specs/2026-05-20-ainiee-translate-skill-design.md)
+### `verify` —— 词汇表执行器
 
-> 状态：v1.4.1 — **自包含**（内置解析/导出，无需 AiNiee 仓库；PDF/Office 可选回退）+ 跨平台（Claude Code / Codex）+ 模块化 + AiNiee profile 导入 + 导入已有项目/缓存 + 斜杠命令菜单 + 润色 pass（含多 agent 并行翻译）。
+只查两类硬伤：`empty_translation`（漏译）、`name_not_preserved`（锁定表人名消失）。
+
+> ⚠️ **「verify 干净」≠「没有翻译错误」**。它只认**锁定表里登记过的**名字——没进表的名字它根本不知道要查。
+> 一份「2 个问题」的干净报告，往往只说明表里恰好只有 2 个相关名字。
+
+### `scan` —— 发现器（补 verify 盲区）
+
+| 模式 | 抓什么 |
+|---|---|
+| `discover` | 表外专名：`inconsistent`（时而保留时而消失，**高置信优先处理**）/ `never_preserved`（全程被音译的真名 + 合法意译的术语，需人眼分） |
+| `terms` | **反向漏译**——词汇表有中文译名的术语，个别段却留成英文 |
+| `strays` | **幻觉插入**——译文里出现、原文却没有的英文 token（凭空错名）|
+| `merges` | 丢空格的粘连词（超长 Latin 串 / camelCase 跳变）|
+
+**推荐闭环**：`verify` 清表内硬伤 → `scan --mode all` 发现表外问题 →
+**把确认的真名补进词汇表** → 再 `verify`（这下表全了，能守住）。
+
+### `repair` —— 存量项目的行内标记修复
+
+v1.4.1 及更早的 epub 解析用 `soup.get_text(strip=True)`，会丢掉行内斜体/粗体，
+并把片段间空格挤掉（`her <i>blade</i> fell` → `herbladefell`）。**v1.5.0 已在解析层修复**；
+存量项目不必重新解析（那会丢译文）：
+
+```bash
+<PFX> -m ainiee_translate.repair work/cache.json               # 预览
+<PFX> -m ainiee_translate.repair work/cache.json --apply       # 写入（自动备份）
+<PFX> -m ainiee_translate.repair work/cache.json --list-marked # 列出译文需重做的段
+```
+
+---
+
+## 开发
+
+```bash
+git clone https://github.com/xuanji86/ainiee-translate-skill.git
+cd ainiee-translate-skill
+PYTHONPATH=src python -m pytest -q      # 61 tests
+./build.sh                              # src/ → skills/ 同步（含漂移守卫）
+```
+
+**布局**：`src/ainiee_translate/` 是**唯一源**；`build.sh` 用 rsync 同步进
+`skills/ainiee-translate/scripts/` 并校验无漂移。改完 `src/` 或
+`skill/references/` 后**务必跑一次** `./build.sh`。
+
+设计文档：[docs/specs/2026-05-20-ainiee-translate-skill-design.md](docs/specs/2026-05-20-ainiee-translate-skill-design.md)
+
+---
 
 ## 许可证
 
-[GNU AGPL-3.0-only](LICENSE)。Copyright (C) 2026 Anji Xu。
+[GNU AGPL-3.0-only](LICENSE) · Copyright (C) 2026 Anji Xu
 
-本项目把 [AiNiee](https://github.com/NEKOparapa/AiNiee) 的解析/导出模块当库使用；AiNiee 同为 AGPL-3.0 许可。
+本项目把 [AiNiee](https://github.com/NEKOparapa/AiNiee) 的解析/导出模块当库使用；AiNiee 同为 AGPL-3.0。
