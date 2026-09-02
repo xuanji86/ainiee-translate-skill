@@ -145,3 +145,24 @@ def test_ncx_decodes_html_entities(tmp_path):
     # 旧版会留下字面 &#x2019; / &#x2014;
     assert "Historian’s Note—One" in src
     assert not any("&#x" in s for s in src)
+
+
+def test_repair_list_marked_finds_stale_translations_after_apply(tmp_path, capsys):
+    import json as _json
+    from ainiee_translate import repair
+    epub = tmp_path / "rich.epub"
+    _make_rich_epub(str(epub))
+    proj = io_dispatch.parse_input(str(epub))
+    for it in cache_io.iter_items(proj):
+        # 旧译文：标记被丢掉（正是修复前的译法）
+        cache_io.set_translation(proj, it.text_index,
+                                 it.source_text.replace("<i>", "").replace("</i>", "")
+                                               .replace("<b>", "").replace("</b>", ""))
+    cache = tmp_path / "cache.json"
+    cache_io.save_cache(proj, str(cache))
+
+    # source_text 已是新版（无需改写），--list-marked 仍须报出陈旧译文
+    assert repair.main([str(cache), "--list-marked"]) == 0
+    listed = _json.loads(capsys.readouterr().out)
+    assert {r["text_index"] for r in listed} == {1, 2, 3}   # 3 段带标记，第 4 段纯文本
+    assert all("<i>" in r["source_text"] or "<b>" in r["source_text"] for r in listed)

@@ -41,7 +41,8 @@ def main(argv=None):
     ap.add_argument("cache", help="项目的 work/cache.json")
     ap.add_argument("--apply", action="store_true", help="写入（默认只预览）")
     ap.add_argument("--list-marked", action="store_true",
-                    help="只列出补回标记、且已有译文的段（这些段的译文需重做）")
+                    help="列出源文有行内标记、但译文标记对不上的段（译文需重做）；"
+                         "--apply 前后均可用")
     ap.add_argument("--limit", type=int, default=10, help="预览条数")
     a = ap.parse_args(argv)
 
@@ -52,12 +53,22 @@ def main(argv=None):
              and MARK_RE.sub("", n) != o]
 
     if a.list_marked:
-        stale = [
-            {"text_index": it.text_index, "source_text": new,
-             "translated_text": it.translated_text}
-            for it, _old, new in marked
-            if (it.translated_text or "").strip()
-        ]
+        # 独立于「是否待改写」判断：源文带标记、但译文里标记数量对不上的段。
+        # 这样 --apply 之前之后都能用（apply 后 plan 为空，但陈旧译文仍在）。
+        stale = []
+        for it in cache_io.iter_items(proj):
+            trans = (it.translated_text or "").strip()
+            if not trans:
+                continue
+            for mark in ("i", "b"):
+                if it.source_text.count(f"<{mark}>") != trans.count(f"<{mark}>"):
+                    stale.append({
+                        "text_index": it.text_index,
+                        "source_text": it.source_text,
+                        "translated_text": it.translated_text,
+                        "translation_status": int(it.translation_status),
+                    })
+                    break
         print(json.dumps(stale, ensure_ascii=False, indent=1))
         return 0
 
