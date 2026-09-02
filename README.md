@@ -5,9 +5,9 @@
 **Agent 原生的长篇翻译管线** —— 让编码 agent 本身当翻译引擎，端到端译完一本书。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.6.0-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
+[![Version](https://img.shields.io/badge/version-1.6.1-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue.svg)](pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-80%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-83%20passing-brightgreen.svg)](tests/)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://claude.com/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-compatible-333.svg)](skills/ainiee-translate/references/codex-tools.md)
 
@@ -204,6 +204,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 | `scan` | `<cache> --locked <locked.json> --mode all` |
 | `repair` | `<cache> [--apply] [--list-marked]` |
 | `audit` | `<cache> [--out audit.json] [--allow-tag-mismatch]` |
+| `precedents` | `<cache> --for grp_*_src.json [--locked L] --out BOOK_BIBLE.md`（续翻时从已译段抽专名先例）|
 
 ---
 
@@ -320,7 +321,7 @@ v1.4.1 及更早的 epub 解析用 `soup.get_text(strip=True)`，会丢掉行内
 ```bash
 git clone https://github.com/xuanji86/ainiee-translate-skill.git
 cd ainiee-translate-skill
-PYTHONPATH=src python -m pytest -q      # 80 tests
+PYTHONPATH=src python -m pytest -q      # 83 tests
 ./build.sh                              # src/ → skills/ 同步（含漂移守卫）
 ```
 

@@ -99,7 +99,9 @@ def lint_locked(locked: dict) -> list[dict]:
             if not n:
                 continue
             toks = normalize_apostrophes(n).split()
-            if toks and toks[0].rstrip(".") in _HON_BARE:
+            canon_toks = normalize_apostrophes(canon).lower().split()
+            titled = len(toks) >= 2 and [t.lower() for t in toks[1:]] == canon_toks
+            if toks and (toks[0].rstrip(".") in _HON_BARE or titled):
                 issues.append({"kind": "alias_has_title", "character": canon, "alias": n,
                                "hint": "verify demands aliases verbatim; a title that gets translated "
                                        "makes this alias false-positive on every hit"})

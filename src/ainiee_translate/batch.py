@@ -176,8 +176,12 @@ def split_project(project, target: int, out_dir: str | None, context: int) -> di
             row["src_file"] = src_path
             if context > 0:
                 p = pos[items[0].text_index]
-                ctx = [it for it in all_items[max(0, p - context * 3):p]
-                       if it.translation_status != TranslationStatus.EXCLUDED][-context:]
+                prev = [it for it in all_items[:p] if it.translation_status != TranslationStatus.EXCLUDED]
+                # Prefer segments that already carry a translation (the point of the
+                # context is to hand the agent the established voice); when the group
+                # sits right behind another pending group, reach back past it.
+                translated = [it for it in prev if (it.translated_text or "").strip()]
+                ctx = (translated if translated else prev)[-context:]
                 ctx_path = os.path.join(out_dir, f"grp_{n}_ctx.json")
                 with open(ctx_path, "w", encoding="utf-8") as f:
                     json.dump([{"text_index": it.text_index, "source_text": it.source_text,

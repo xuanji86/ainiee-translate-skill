@@ -59,6 +59,18 @@ def test_split_cli_writes_src_and_ctx_files(tmp_path, capsys):
     assert ctx[-1]["translated_text"] == "译40"
 
 
+def test_split_ctx_prefers_translated_segments_behind_a_pending_group(tmp_path, capsys):
+    # ch1 translated, ch2 + ch3 pending: ch3's context must reach back past ch2 to ch1's translations
+    proj = _epub_like([30, 30, 30], translated_prefix=30)
+    cache = tmp_path / "cache.json"; cache_io.save_cache(proj, str(cache))
+    out = tmp_path / "par"
+    batch.main(["split", str(cache), "--target", "30", "--out-dir", str(out), "--context", "5"])
+    capsys.readouterr()
+    ctx3 = json.load(open(out / "grp_2_ctx.json", encoding="utf-8"))
+    assert [r["text_index"] for r in ctx3] == [26, 27, 28, 29, 30]
+    assert all(r["translated_text"] for r in ctx3)
+
+
 def test_validate_reports_missing_and_tag_mismatch():
     src = [{"text_index": 1, "source_text": "<i>A</i> b"}, {"text_index": 2, "source_text": "c"}]
     good = [{"text_index": 1, "translated_text": "<i>甲</i> 乙"}, {"text_index": 2, "translated_text": "丙"}]

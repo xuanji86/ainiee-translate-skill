@@ -47,7 +47,8 @@
 - 只取 `status=0` 段；按 epub spine 文件（`extra.item_id`）**在章节边界切**，贪心凑到 `--target` 段左右；
   单章超过 1.5×target 自行切块；尾巴不足 0.4×target 并入前一组。非 epub 无章节信息时按定长切。
 - 每组产出 `par/grp_N_src.json`（`{text_index, source_text}` 数组，subagent 的输入）和
-  `par/grp_N_ctx.json`（该组**前 20 段**的原文+已有译文，只读上下文：章首的代词性别、说话人、上一章结尾靠它）。
+  `par/grp_N_ctx.json`（该组之前**最近 20 段已译**的原文+译文，只读上下文：章首的代词性别、说话人、上一章结尾靠它；
+  紧挨着的前一组若也待译，会自动往前找到有译文的段）。
 - stdout 是分组计划（组号、段数、index 范围、章节 id）。
 
 **并发数怎么定**：组数 = 同时跑的 agent 数。约束不是固定上限而是速率预算：**~300 段一组、同时 5–8 个**起步，
@@ -71,8 +72,14 @@ done
 - `STYLE_GUIDE.md`：用 `references/style_guide_template.md` 生成 `<PROJ>/work/STYLE_GUIDE.md`。**要点从已确认的样章反推**：
   样章用了全角逗号就写「全角逗号」，用了 “ ” 就写「对话用 “ ”」——之后 `batch validate` 的 `halfwidth_punct` /
   `cjk_corner_quote` 警告就是对这两条的机械执行。
-- `BOOK_BIBLE.md`（推荐，尤其是有军衔/亲属/舰级体系的书）：翻译前先派 1–2 个便宜 agent 通读各组源文，
-  按 `references/book_bible_template.md` 抽**事实**：每个角色的性别、实衔、亲属关系、舰名与舰级、每章一句梗概。
+- `BOOK_BIBLE.md`（推荐，尤其是有军衔/亲属/舰级体系的书）：
+  - **书已译了一部分**（续翻/补章）：一条命令从已译段机械抽先例——待译段里每个专名在已译文本中怎么处理、后接什么称谓：
+    ```bash
+    <PFX> -m ainiee_translate.precedents <PROJ>/work/cache.json --for <PROJ>/work/par/grp_*_src.json \
+         --locked <PROJ>/work/glossary.locked.json --out <PROJ>/work/BOOK_BIBLE.md
+    ```
+  - **全新的书**：翻译前先派 1–2 个便宜 agent 通读各组源文，按 `references/book_bible_template.md` 抽**事实**：
+    每个角色的性别、实衔、亲属关系、舰名与舰级、每章一句梗概。
   Janeway 上将/中将、Irene 姑妈/姨妈这类错误，靠事后校对要改上百段；靠 bible 在译前就定死。
 
 ### 4. 并发派发 subagent（同一条消息里发多个 Agent 调用；一波 ~5–8 个）

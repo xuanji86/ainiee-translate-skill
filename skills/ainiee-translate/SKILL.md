@@ -422,6 +422,9 @@ $PFX -m ainiee_translate.repair "$WORK/work/cache.json" --apply
 # 发现（补 verify 盲区：表外被音译/丢失的专名 + 术语漏译 + 幻觉错名 + 粘连词）
 $PFX -m ainiee_translate.scan "$WORK/work/cache.json" --locked "$WORK/work/glossary.locked.json" --mode all
 
+# 续翻/补章：从已译段抽专名先例表给并行 agent 对齐
+$PFX -m ainiee_translate.precedents "$WORK/work/cache.json" --for "$WORK/work/par"/grp_*_src.json --locked "$WORK/work/glossary.locked.json" --out "$WORK/work/BOOK_BIBLE.md"
+
 # 机械体检 / 词汇表结构检查 / 并入并行 agent 记录的新词
 $PFX -m ainiee_translate.audit "$WORK/work/cache.json" --out "$WORK/work/audit.json"
 $PFX -m ainiee_translate.glossary lint --locked "$WORK/work/glossary.locked.json"
