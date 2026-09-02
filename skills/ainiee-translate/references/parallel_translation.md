@@ -82,6 +82,13 @@ done
     每个角色的性别、实衔、亲属关系、舰名与舰级、每章一句梗概。
   Janeway 上将/中将、Irene 姑妈/姨妈这类错误，靠事后校对要改上百段；靠 bible 在译前就定死。
 
+### 3.5 开一个进度面板（可选，另一个终端）
+
+```bash
+<PFX> -m ainiee_translate.progress <PROJ>/work/cache.json --watch
+```
+每组一行：`running` / `stalled`（>180 秒没 append）/ `ready`（可写回）/ `needs_fix` / `written`，附速率与 ETA。它同时把一行摘要写进 `~/.ainiee-translate/progress.line` 供 statusline 显示（见 SKILL.md 附录 D）。
+
 ### 4. 并发派发 subagent（同一条消息里发多个 Agent 调用；一波 ~5–8 个）
 
 每个 agent 的 prompt 自包含（模板见下）。关键点：

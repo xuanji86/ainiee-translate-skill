@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "ainiee-translate",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "description": "Agent-native novel/EPUB translation, AiNiee-style — no AiNiee app required.",
   "owner": {
     "name": "Anji Xu",
@@ -12,7 +12,7 @@
       "name": "ainiee-translate",
       "source": "./",
       "description": "Translate a novel/epub end-to-end on the coding agent (Claude Code / Codex): parse, build a locked glossary, translate chapter by chapter (names preserved, title 3-way, term consistency), optional multi-agent parallel mode, write back and export. Self-contained Python pipeline (vendored parse/export for epub/txt/docx/xlsx/… — no AiNiee repo); pip install a few light libs. AINIEE_REPO optional, only for PDF/Office.",
-      "version": "1.6.1",
+      "version": "1.7.0",
       "author": {
         "name": "Anji Xu",
         "email": "xuanji86@gmail.com"

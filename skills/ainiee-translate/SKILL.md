@@ -430,6 +430,10 @@ $PFX -m ainiee_translate.audit "$WORK/work/cache.json" --out "$WORK/work/audit.j
 $PFX -m ainiee_translate.glossary lint --locked "$WORK/work/glossary.locked.json"
 $PFX -m ainiee_translate.glossary merge-newterms --locked "$WORK/work/glossary.locked.json" "$WORK/work/par"/newterms_*.txt --apply
 
+# 进度面板（多 agent 时每组一行；--watch 在另一个终端分屏跑，--line 给 statusline）
+$PFX -m ainiee_translate.progress "$WORK/work/cache.json" --once
+$PFX -m ainiee_translate.progress "$WORK/work/cache.json" --watch
+
 # 并行翻译：分组 / 瘦身词汇表 / 验收 / 一次写回多组（详见 references/parallel_translation.md）
 $PFX -m ainiee_translate.batch split "$WORK/work/cache.json" --target 300 --out-dir "$WORK/work/par" --context 20
 $PFX -m ainiee_translate.glossary filter --locked "$WORK/work/glossary.locked.json" --for "$WORK/work/par/grp_1_src.json" --out "$WORK/work/par/g_1.json"
@@ -478,5 +482,30 @@ A: verify 只执行**锁定表里登记过的**人名，且无法识别张冠李
 | `glossary` / `export <输入>` / `verify` / `status` | 词汇表 / 导出 / 校验 / 状态 |
 | `scan [discover\|terms\|strays\|merges\|all]` | 补 verify 盲区：表外被音译/丢失的专名(`discover`)、被漏译成英文的术语(`terms`)、幻觉插入的错名(`strays`)、粘连词(`merges`)|
 | `audit [--allow-tag-mismatch]` | 机械体检：空译/标记不匹配（硬伤）+ 半角标点/「」/长度比等风格警告 |
+| `progress [--line\|--json]` | 进度面板：全书进度 + 每个并行组的 running/stalled/ready/needs_fix/written |
 
 命令脚本路径用 `${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts`，并需用户设好 `AINIEE_PY`（`AINIEE_REPO` 仅 PDF/Office 回退才需要）。
+
+---
+
+## 附录 D：实时进度（`progress`）
+
+翻译进度在磁盘上是可观测的：`cache.json` 的状态计数在每次 `batch write` 后变化；并行时每个 subagent 边译边 append 的 `par/trans_N.jsonl` 行数就是该组的实时进度；`apply_writeback` 每次写回都往 `work/progress.jsonl` 追加一条事件。`progress` 模块只读这些文件：
+
+```bash
+<PFX> -m ainiee_translate.progress work/cache.json --watch     # 另开终端分屏：rich 实时面板，2 秒刷新
+<PFX> -m ainiee_translate.progress work/cache.json --once      # 渲染一次（斜杠命令 /ainiee-translate:progress 就是它）
+<PFX> -m ainiee_translate.progress work/cache.json --line      # 一行摘要：📖 Warpath 2391/2507 (95%) · ▶3 18/24 ▶4 25/25 · ✓1,2 · 4.1/min
+<PFX> -m ainiee_translate.progress work/cache.json --json      # 完整快照
+```
+
+每组状态：`running`（jsonl 在长）→ `ready`（条数够且无空译/标记问题，可 `batch write`）或 `needs_fix`；jsonl 超过 `--stall` 秒（默认 180）没动就标 `stalled`；写回后变 `written`。面板底部给速率、剩余段的 ETA、卡死与可写回的组。
+
+**statusline 接入**：`--watch` 与 `--line` 都会把一行摘要写到 `~/.ainiee-translate/progress.line`；在 statusline 脚本里加几行「文件存在且 5 分钟内更新过就拼进状态栏」，会话底栏就常驻进度，不用切窗口。示例（macOS `stat -f %m`）：
+
+```bash
+pl="$HOME/.ainiee-translate/progress.line"
+if [ -f "$pl" ] && [ $(( $(date +%s) - $(stat -f %m "$pl" 2>/dev/null || echo 0) )) -lt 300 ]; then
+  line+=" | $(head -c 200 "$pl")"
+fi
+```

@@ -158,4 +158,17 @@ def apply_writeback(cache_path: str, items: list[dict], status: int, get_text,
             item.translation_status = status
             res.applied += 1
         save_cache(project, cache_path)
+    _log_event(cache_path, {"event": "write", "status": int(status), "applied": res.applied,
+                            "rejected": len(res.rejected), "total": res.total})
     return res
+
+
+def _log_event(cache_path: str, event: dict) -> None:
+    """Append one line to <work>/progress.jsonl so `progress` can show write-back history."""
+    import time
+    path = os.path.join(os.path.dirname(os.path.abspath(cache_path)), "progress.jsonl")
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": time.time(), **event}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass

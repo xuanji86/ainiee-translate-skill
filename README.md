@@ -5,9 +5,9 @@
 **Agent 原生的长篇翻译管线** —— 让编码 agent 本身当翻译引擎，端到端译完一本书。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.6.1-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
+[![Version](https://img.shields.io/badge/version-1.7.0-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue.svg)](pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-83%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-86%20passing-brightgreen.svg)](tests/)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://claude.com/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-compatible-333.svg)](skills/ainiee-translate/references/codex-tools.md)
 
@@ -152,7 +152,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 
 两层：**斜杠命令**（插件内用）和其底层 **Python CLI**（Codex / 手动 / 调试）。
 
-### 斜杠命令（16 个）
+### 斜杠命令（17 个）
 
 **翻译流程**
 
@@ -173,6 +173,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 | `/ainiee-translate:scan` | `[discover\|terms\|strays\|merges\|all]` | 补 verify 盲区（见[质量闭环](#质量闭环)）|
 | `/ainiee-translate:repair` | — | 修复存量 epub 项目的行内标记与空格 |
 | `/ainiee-translate:audit` | `[--allow-tag-mismatch]` | 机械体检：空译/标记不匹配 + 半角标点/「」/长度比等 |
+| `/ainiee-translate:progress` | `[--line\|--json]` | 进度面板：全书 + 每个并行组的状态/速率/卡死 |
 
 **模块与提示词**
 
@@ -204,6 +205,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 | `scan` | `<cache> --locked <locked.json> --mode all` |
 | `repair` | `<cache> [--apply] [--list-marked]` |
 | `audit` | `<cache> [--out audit.json] [--allow-tag-mismatch]` |
+| `progress` | `<cache> [--watch\|--once\|--line\|--json]`（多 agent 进度面板 / statusline 一行）|
 | `precedents` | `<cache> --for grp_*_src.json [--locked L] --out BOOK_BIBLE.md`（续翻时从已译段抽专名先例）|
 
 ---
@@ -321,7 +323,7 @@ v1.4.1 及更早的 epub 解析用 `soup.get_text(strip=True)`，会丢掉行内
 ```bash
 git clone https://github.com/xuanji86/ainiee-translate-skill.git
 cd ainiee-translate-skill
-PYTHONPATH=src python -m pytest -q      # 83 tests
+PYTHONPATH=src python -m pytest -q      # 86 tests
 ./build.sh                              # src/ → skills/ 同步（含漂移守卫）
 ```
 
