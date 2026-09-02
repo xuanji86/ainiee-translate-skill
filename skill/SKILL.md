@@ -79,6 +79,29 @@ PYTHONPATH=src /Users/Anji/Desktop/AiNiee/.venv/bin/python -m pytest -p no:warni
 
 - `--type`：`AutoType`（自动检测）、`Epub`、`Txt` 等，默认 `AutoType`。
 - 成功后打印：`parsed N items -> work/cache.json`。
+- **epub 的行内排版会被保留**：源书的斜体/粗体（`<i>`、`<em>`、`<span class="italic">` 等各种写法）在 `source_text` 里统一成 `<i>…</i>` / `<b>…</b>` 标记，导出时按该段原文的实际写法还原。翻译时**原样保留标记**（见 `references/translation_rules.md`），不要再用『』手动标斜体。
+---
+
+## 步骤 2 附：修复存量项目的行内标记与空格（`repair`）
+
+v1.4.1 及更早版本的 epub 解析用 `soup.get_text(strip=True)` 抽文本，有两个后果：
+①**丢掉行内斜体/粗体**；②对每个文本片段单独 strip 再无缝拼接，把片段间的空格挤掉，
+产生系统性粘连词（`her <i>blade</i> fell` → `herbladefell`）。解析层已修复；
+**存量项目**不必重新解析（那会丢掉已有译文），用本命令从每段的 `extra.original_html`
+就地重建 `source_text`：
+
+```bash
+# 预览（默认不写）
+<PFX> -m ainiee_translate.repair ~/my-project/work/cache.json
+# 写入（自动时间戳备份）
+<PFX> -m ainiee_translate.repair ~/my-project/work/cache.json --apply
+# 列出「补回了标记、但已有旧译文」的段——这些段的译文缺斜体，需重做
+<PFX> -m ainiee_translate.repair ~/my-project/work/cache.json --list-marked
+```
+
+只改 `source_text`，不动译文与状态。补回的标记不会自动进旧译文，所以：
+`--apply` 之后跑 `--list-marked`，把列出的段用 `batch write`（已译）/
+`polish write`（已润色）重做一遍即可。
 
 ---
 
@@ -297,7 +320,7 @@ verify 是**词汇表执行器**，不是**发现器**。它只能发现「锁�
 2. **整段成员检查，漏「同段对错并存」**：verify 只看「这个名字在该段译文里**在不在**」。若同一段里某名字一处保留英文、另一处被音译（例：`Keru 看着…后来克鲁离开`），verify 看到「Keru 在」就不报。
 3. **「全程音译」的名字无信号**：若某名字在**全书每一处**都被音译（例 `Tenmei→天明`、`Rianu→里亚努`），它从没以英文出现过，"时而对时而错"的不一致信号为零。
 4. **区分不了「音译错误」与「合理代词省略 / 合法意译」**：verify 是二元的「在/不在」。补全词汇表后，那些把名字合理处理成「他/她」的段会被误报为 `name_not_preserved`——需逐条人眼判断；同样，`Vulcan→瓦肯` 这种合法意译它也无法识别。
-5. **完全不覆盖的错误类型**：①「张冠李戴」——表外名字被换成**别的**名字（`Dax→萨姆`、`Gard→Vic`）；② OCR/解析**丢空格的粘连词**漏进译文（`thenaiskosfragment`、`anesaniblossom`）；③ 整句**未翻译的英文残留**留在译文里。
+5. **完全不覆盖的错误类型**：①「张冠李戴」——表外名字被换成**别的**名字（`Dax→萨姆`、`Gard→Vic`）；② **丢空格的粘连词**漏进译文（`thenaiskosfragment`、`anesaniblossom`；epub 解析器那批已修，见 `repair`）；③ 整句**未翻译的英文残留**留在译文里。
 
 ### 步骤 7+：用 `scan` 发现词汇表缺口与解析瑕疵（补 verify 的盲区）
 
@@ -312,14 +335,15 @@ verify 是**词汇表执行器**，不是**发现器**。它只能发现「锁�
   - `inconsistent`（**高置信，优先处理**）：同名时而保留英文、时而消失——单点滑落 / 同段对错并存（如 Rio Grande、951 的 Keru）。
   - `never_preserved`（**需人眼判断**）：从不以英文出现，含「全程被音译的真名」（Tenmei→天明、Rianu→里亚努）与「合法意译的术语」（Vulcan→瓦肯）两类混在一起。
 - `terms`：**反向漏译**——词汇表里有中文译名（`dst`、非 `keep_source`）的术语，却在个别段被留成了英文（`Starfleet`→星际舰队 全书都译了、唯独某段漏成 "Starfleet"）。
-- `strays`：**模型幻觉插入**——译文里出现、但该段原文里没有的英文 token（凭空写出的错名 `Vic`/`Sam`/`Sef`、顶替"the guard"的 `Lt`）。是**复查列表非合格门**：结果含解析粘连词（`theRio`→Rio）与一贯保留的外星术语，需人眼筛；真信号是无来由的短错名。
+- `strays`：**模型幻觉插入**——译文里出现、但该段原文里没有的英文 token（凭空写出的错名 `Vic`/`Sam`/`Sef`、顶替"the guard"的 `Lt`）。是**复查列表非合格门**：结果含一贯保留的外星术语，需人眼筛；真信号是无来由的短错名。
 - `merges`：原文里**超长 Latin 串或 camelCase 跳变**的丢空格粘连词（`thenaiskosfragment`、`speciesDraco`、`TheAlexandria`）；调小 `--min-merge-len` 可挖更短的。
+  - ⚠️ 这类粘连的**主因**曾是 epub 解析器逐片段 strip（`her <i>blade</i> fell` → `herbladefell`），已在解析层修复。新解析的项目里 `merges` 命中数应大幅下降；**存量项目**先跑 `repair --apply` 再看，剩下的才是源书本身的排版缺陷。
 
 **推荐校对闭环**：`verify`（清掉表内硬伤）→ `scan --mode all`：
 1. `discover`：`inconsistent` 全改、`never_preserved` 人眼挑真名；
 2. `terms`：补回被漏成英文的术语译名；
 3. `strays`：揪出幻觉错名（`Vic`/`Sam`/`Lt` 类）；
-4. `merges`：收 OCR 粘连词。
+4. `merges`：收粘连词（epub 解析导致的那批已由 `repair` 消除，剩下的是源书缺陷）。
 
 → **把确认的真名/地名补进 `glossary.locked.json` 的 `characters`，保留英文的通名补进 `terms`（`keep_source:true`），有中文译名的术语也进 `terms`（带 `dst`）** → 再 `verify`（这下表全了，能守住；忽略代词省略类误报）。改已润色段一律用 `polish write` 以保住状态。
 
@@ -355,7 +379,10 @@ $PFX -m ainiee_translate.export --cache work/cache.json --output out/ --input bo
 # 验证（执行锁定表：漏译 + 表内人名汉化；查 status 1+2）
 $PFX -m ainiee_translate.verify work/cache.json work/mybook.locked.json
 
-# 发现（补 verify 盲区：表外被音译/丢失的专名 + OCR 粘连词）
+# 修复存量项目的行内标记与空格（旧版解析出的 cache.json；预览去掉 --apply）
+$PFX -m ainiee_translate.repair "$WORK/work/cache.json" --apply
+
+# 发现（补 verify 盲区：表外被音译/丢失的专名 + 粘连词）
 $PFX -m ainiee_translate.scan work/cache.json --locked work/mybook.locked.json --mode all
 
 # 完整测试套件
@@ -383,7 +410,7 @@ A: 直接用 `batch write` 写入新的 `translated_text`（按 `text_index` 覆
 A: 在 `translations.json` 中将 `translated_text` 设为源文原样（或空字符串后用 verify 检测），或在生成时 agent 判断后直接复制源文。
 
 **Q: `verify` 报 0 问题，但书里明明还有人名被音译 / 错译，为什么？**
-A: verify 只执行**锁定表里登记过的**人名，且无法识别张冠李戴、OCR 粘连词、未译残留等。「0 问题」常常只说明表内名字没丢。用 `scan --mode all` 发现表外被音译/丢失的专名（`inconsistent` 优先改，`never_preserved` 人眼挑真名）和粘连词，**把确认的真名补进词汇表后再 verify**。详见步骤 7 的「verify 的局限」。
+A: verify 只执行**锁定表里登记过的**人名，且无法识别张冠李戴、粘连词、未译残留等。「0 问题」常常只说明表内名字没丢。用 `scan --mode all` 发现表外被音译/丢失的专名（`inconsistent` 优先改，`never_preserved` 人眼挑真名）和粘连词，**把确认的真名补进词汇表后再 verify**。详见步骤 7 的「verify 的局限」。
 
 ---
 
@@ -400,7 +427,8 @@ A: verify 只执行**锁定表里登记过的**人名，且无法识别张冠李
 | `gen-prompt translate\|polish [模块]` | 让 agent 起草翻译/润色提示词 |
 | `switch-prompt [模块]` / `show-prompt [模块]` | 切换 / 查看模块 |
 | `polish [批大小]` | 润色 pass |
+| `repair` | 修复存量 epub 项目的行内标记与空格（旧解析器遗留）|
 | `glossary` / `export <输入>` / `verify` / `status` | 词汇表 / 导出 / 校验 / 状态 |
-| `scan [discover\|terms\|strays\|merges\|all]` | 补 verify 盲区：表外被音译/丢失的专名(`discover`)、被漏译成英文的术语(`terms`)、幻觉插入的错名(`strays`)、OCR 粘连词(`merges`)|
+| `scan [discover\|terms\|strays\|merges\|all]` | 补 verify 盲区：表外被音译/丢失的专名(`discover`)、被漏译成英文的术语(`terms`)、幻觉插入的错名(`strays`)、粘连词(`merges`)|
 
 命令脚本路径用 `${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts`，并需用户设好 `AINIEE_PY`（装好依赖的 python；`AINIEE_REPO` 仅 PDF/Office 回退）。

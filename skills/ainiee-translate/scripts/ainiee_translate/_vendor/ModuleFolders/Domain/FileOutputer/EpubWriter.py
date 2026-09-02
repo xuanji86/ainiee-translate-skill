@@ -3,7 +3,7 @@ from itertools import groupby
 from pathlib import Path
 from typing import Callable
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from ainiee_translate._vendor.ModuleFolders.Service.Cache.CacheFile import CacheFile
 from ainiee_translate._vendor.ModuleFolders.Service.Cache.CacheItem import TranslationStatus
@@ -16,6 +16,56 @@ from ainiee_translate._vendor.ModuleFolders.Domain.FileOutputer.BaseWriter impor
     PreWriteMetadata,
     BilingualOrder,
 )
+
+
+# 译文里的内联强调标记（由 EpubReader.extract_text_with_marks 产生）。
+# 回写时按该段 original_html 里实际用的写法还原，原文没有对应写法则退回
+# 语义标签 <i>/<b>。
+_MARK_FALLBACK = {"i": ("i", None), "b": ("b", None)}
+_MARK_TAGS = {"i": ("i", "em", "cite", "dfn", "var"), "b": ("b", "strong")}
+_MARK_CLASSES = {"i": ("italic", "italics"), "b": ("bold",)}
+
+
+def _escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _wrapper_from_original(original_html: str, mark: str):
+    """从原文里找出该强调标记对应的开/闭标签写法。"""
+    soup = BeautifulSoup(original_html, "html.parser")
+    for tag in soup.find_all(True):
+        classes = tag.get("class") or ()
+        hit = tag.name in _MARK_TAGS[mark] or any(c in _MARK_CLASSES[mark] for c in classes)
+        if not hit:
+            continue
+        attrs = "".join(
+            ' {}="{}"'.format(k, " ".join(v) if isinstance(v, list) else v)
+            for k, v in tag.attrs.items()
+        )
+        open_tag, close_tag = f"<{tag.name}{attrs}>", f"</{tag.name}>"
+        # 原文形如 <span class="italic"><span>…</span></span>：内层裸 span 一并复刻
+        only = [c for c in tag.children if not (isinstance(c, str) and not c.strip())]
+        if len(only) == 1 and isinstance(only[0], Tag) and only[0].name == "span" and not only[0].attrs:
+            open_tag += "<span>"
+            close_tag = "</span>" + close_tag
+        return open_tag, close_tag
+    name = _MARK_FALLBACK[mark][0]
+    return f"<{name}>", f"</{name}>"
+
+
+def render_marks(text: str, original_html: str) -> str:
+    """转义译文，再把 <i>/<b> 标记还原成真正的行内标签。"""
+    out = _escape(text)
+    for mark in ("i", "b"):
+        if f"&lt;{mark}&gt;" not in out:
+            continue
+        open_tag, close_tag = _wrapper_from_original(original_html, mark)
+        out = out.replace(f"&lt;{mark}&gt;", open_tag).replace(f"&lt;/{mark}&gt;", close_tag)
+    return out
+
+
+def has_marks(text: str) -> bool:
+    return bool(re.search(r"</?[ib]>", text))
 
 
 class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
@@ -87,6 +137,14 @@ class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
         if original_tag.is_empty_element:
             return str(new_tag)
 
+        if has_marks(processed_translated):
+            attrs = "".join(
+                ' {}="{}"'.format(k, " ".join(v) if isinstance(v, list) else v)
+                for k, v in new_tag.attrs.items()
+            )
+            body = render_marks(processed_translated, original_html)
+            return f"<{new_tag.name}{attrs}>{body}</{new_tag.name}>"
+
         new_tag.string = processed_translated
         return str(new_tag)
 
@@ -108,8 +166,9 @@ class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
             original_text_content = soup.get_text()
             processed_trans = self._copy_leading_spaces(original_text_content, translated_text)
             style_str = '; '.join([f"{k}:{v}" for k, v in ORIGINAL_STYLE.items()])
-            
-            trans_div = f'<div>{processed_trans}</div>'
+
+            rendered = render_marks(processed_trans, original_html) if has_marks(processed_trans) else processed_trans
+            trans_div = f'<div>{rendered}</div>'
             orig_div = f'<div style="{style_str}">{original_html}</div>'
 
             if self.output_config.bilingual_order == BilingualOrder.SOURCE_FIRSTT:
@@ -124,6 +183,17 @@ class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
         # 1. 创建全新的译文标签
         trans_tag = soup.new_tag(original_tag.name, attrs=original_tag.attrs.copy())
         trans_tag.string = processed_trans
+        trans_marked = None
+        if has_marks(processed_trans):
+            attrs = "".join(
+                ' {}="{}"'.format(k, " ".join(v) if isinstance(v, list) else v)
+                for k, v in trans_tag.attrs.items()
+            )
+            trans_marked = (
+                f"<{trans_tag.name}{attrs}>"
+                f"{render_marks(processed_trans, original_html)}"
+                f"</{trans_tag.name}>"
+            )
 
         # 2. 创建一个全新的、带样式的原文标签，而不是在原始标签上就地修改。
         #    这是为了避免 BeautifulSoup 的副作用导致原始标签内容丢失。
@@ -144,7 +214,7 @@ class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
             orig_styled_tag.extend(list(original_tag.contents))
         
         # 4. 组合并返回两个新创建标签的字符串形式
-        trans_html = str(trans_tag)
+        trans_html = trans_marked if trans_marked is not None else str(trans_tag)
         orig_html_styled = str(orig_styled_tag)
         
         if self.output_config.bilingual_order == BilingualOrder.SOURCE_FIRST:

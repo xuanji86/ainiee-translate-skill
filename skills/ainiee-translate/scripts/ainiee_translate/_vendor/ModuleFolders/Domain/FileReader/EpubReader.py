@@ -15,6 +15,58 @@ from ainiee_translate._vendor.ModuleFolders.Domain.FileReader.BaseReader import 
 )
 
 
+# 内联强调标记：源文里的斜体/粗体在 source_text 中以 <i>…</i> / <b>…</b> 形式
+# 保留，译者需原样保留标记；EpubWriter 回写时按该段 original_html 的实际写法
+# （<i>、<em>、<span class="italic"> …）还原。
+INLINE_MARKS = {
+    "i": ("i", "em", "cite", "dfn", "var"),
+    "b": ("b", "strong"),
+}
+INLINE_CLASS_MARKS = {"italic": "i", "italics": "i", "bold": "b"}
+_TAG_TO_MARK = {t: m for m, tags in INLINE_MARKS.items() for t in tags}
+
+
+def _mark_for(tag: Tag) -> str | None:
+    """该元素对应的内联标记字母（i/b），不是强调元素则返回 None。"""
+    if tag.name in _TAG_TO_MARK:
+        return _TAG_TO_MARK[tag.name]
+    for cls in tag.get("class") or ():
+        if cls in INLINE_CLASS_MARKS:
+            return INLINE_CLASS_MARKS[cls]
+    return None
+
+
+def extract_text_with_marks(html: str) -> str:
+    """把标签内容抽成纯文本，但保留内联强调为 <i>/<b> 标记。
+
+    同时修掉 soup.get_text(strip=True) 的老问题：它对每个文本片段单独 strip
+    再无缝拼接，会把 "her <i>blade</i> fell" 挤成 "herbladefell"。这里保留
+    片段间空白，最后统一折叠。
+    """
+    def walk(node) -> str:
+        if isinstance(node, NavigableString):
+            return str(node)
+        if not isinstance(node, Tag):
+            return ""
+        inner = "".join(walk(c) for c in node.children)
+        mark = _mark_for(node)
+        if mark and inner.strip():
+            # 同类标记嵌套（<span class="italic"><span><i>x</i></span></span>）不重复包裹
+            if inner.startswith(f"<{mark}>") and inner.endswith(f"</{mark}>"):
+                return inner
+            return f"<{mark}>{inner}</{mark}>"
+        return inner
+
+    soup = BeautifulSoup(html, "html.parser")
+    text = "".join(walk(c) for c in soup.contents)
+    text = text.replace("\u00a0", " ")
+    text = re.sub(r"[ \t\r\n\u3000]+", " ", text).strip()
+    # 标记贴边的空白挪到标记外，保证 "<i>x</i>" 内部不带首尾空格
+    text = re.sub(r"<([ib])>[ ]+", r" <\1>", text)
+    text = re.sub(r"[ ]+</([ib])>", r"</\1> ", text)
+    return re.sub(r"[ ]{2,}", " ", text).strip()
+
+
 class EpubReader(BaseSourceReader):
     def __init__(self, input_config: InputConfig):
         super().__init__(input_config)
@@ -73,7 +125,7 @@ class EpubReader(BaseSourceReader):
 
                 # 提取纯文本，并处理嵌套标签
                 soup = BeautifulSoup(html_text_C, 'html.parser')
-                text_content = soup.get_text(strip=True)
+                text_content = extract_text_with_marks(html_text_C)
 
                 if not text_content:  # 检查一下是否提取到空文本内容
                     continue
@@ -109,8 +161,10 @@ class EpubReader(BaseSourceReader):
         
         for match in re.finditer(text_pattern, ncx_content, re.DOTALL):
             original_html = match.group(0)  # 完整的 <text>...</text>
-            text_content = match.group(1).strip()  # 标签内的文本内容
-            
+            # 走同一套抽取：解 HTML 实体（&#x2019; → ’）、保留行内强调、修好空格。
+            # 旧版这里用裸 match.group(1).strip()，实体会原样漏进 source_text。
+            text_content = extract_text_with_marks(match.group(1))
+
             if not text_content:
                 continue
                 
