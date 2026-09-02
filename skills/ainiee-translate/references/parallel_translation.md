@@ -1,143 +1,154 @@
 # 多 agent 并行翻译（大书加速）
 
 把步骤 5 的逐章串行翻译，改为**多个 subagent 同时翻译不同章节范围**，墙钟时间≈最慢的那个 agent。
-本流程在一本 ~2400 段的小说上实测：11 章 1704 段由 7 个 agent 并发，约 9 分钟译完（串行需十几轮）。
+编排的每一步都有确定性命令：`batch split` 分组、`glossary filter` 瘦身词汇表、`batch validate` 验收、
+`batch write` 一次串行写回多组。主控不再手写任何 Python heredoc。
 
-**占位符说明**：`<PFX>` = AiNiee venv 命令前缀（见 SKILL.md「真实运行时说明」）；`<PROJ>` = 本翻译项目目录
-（如 `~/mybook`）；`<SKILL>` = 本技能目录 `/Users/Anji/Desktop/ainiee-translate/skill`；`<book>` = 锁定表文件名前缀。
+**占位符**：`<PFX>` = `PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY"`；`<PROJ>` = 本翻译项目目录（含 `work/`）；
+`<SKILL>` = 本技能目录 `$SKILL_DIR`（插件安装时为 `${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate`）。
 
-> **Codex**：下文的「subagent / Task」读作 `spawn_agent`（需在 `~/.codex/config.toml` 设 `[features] multi_agent = true`），结果用 `wait` 收、`close_agent` 释放；完整工具名对照见 `references/codex-tools.md`。「唯一铁律」（subagent 不写 `cache.json`）不变。
+> **Codex**：下文的「subagent / Agent 工具」读作 `spawn_agent`（需在 `~/.codex/config.toml` 设 `[features] multi_agent = true`），
+> 结果用 `wait` 收、`close_agent` 释放；完整工具名对照见 `references/codex-tools.md`。铁律不变。
 
 ## 何时用
 
 - 书很大（数百段以上）、章节之间相互独立。
 - **风格已锁定**：先用步骤 4 的模式 A 译完约 1 章、经用户确认，再并行。否则各 agent 风格会发散。
-- 锁定词汇表 + 用户自定义提示词已就位（涵盖主要人物/术语/项目规则；并行时新实体一律「保留原文 + 记录」，靠它们保证一致）。
+- 锁定词汇表 + 用户提示词已就位。并行时新实体一律「保留原文 + 记录」。
 
 ## 唯一铁律：subagent 绝不写 cache.json
 
-`batch write` 会「读改写」整个 `cache.json`。多个 agent 并发写 → 相互覆盖 / 文件损坏。
+`batch write` 是「读改写」整个文件。并发写会相互覆盖。`write` 现在带文件锁与写回闸门，
+但锁只保证不损坏，**不保证语义正确**——仍然只让主控写。
 
 ```
-✗ 让每个 subagent 自己 batch write 到同一个 cache.json   —— 数据竞争，必坏
-✓ subagent 只产出译文 JSON 文件；主控 agent 串行写回      —— 安全
+✗ 让每个 subagent 自己 batch write   —— 禁止
+✓ subagent 只产出 /tmp/trans_N.jsonl；主控 validate 后一次 write 全部  —— 正确
 ```
 
 **架构：**
 ```
-主控：拆分章节 → 抽取各组源文件 → 写 STYLE_GUIDE.md
-  ├─ agent1 (ch a-b)  读 glossary+rules+style+输入 → 产出 trans_1.json + newterms_1.txt
-  ├─ agent2 (ch c-d)  ……（并发，互不写共享文件）
+主控：batch split → glossary filter（每组）→ 写 STYLE_GUIDE.md（+ 可选 BOOK_BIBLE.md）
+  ├─ agent1 (grp_1)  读 style+bible+g1.json+rules+ctx → 边译边 append trans_1.jsonl + newterms_1.txt
+  ├─ agent2 (grp_2)  ……（并发，互不写共享文件）
   └─ agentN ……
-主控：校验各输出 → 归一化风格漂移 → **串行** batch write 每个文件 → 合并新词 → 全书 verify → 导出
+主控：batch validate 每组 → 不过的只重派那一组 → batch write 一次全部 → merge-newterms → verify + scan → export
 ```
 
 ## 步骤
 
-### 1. 拆分章节（在边界上、按段数均衡）
-先程序化地枚举章节边界，再按 `status==0` 的段数均衡分组，每组 ~200–300 段，**在章节边界切**
-（章内段落彼此独立，但同章共享场景上下文，整章给同一 agent 读起来更连贯）。
+### 1. 分组 + 抽取源文（一条命令）
 
-```python
-# <PFX> python - <<'PY'  —— 找章节边界 + 各章未译段数
-import json, re
-d=json.load(open('work/cache.json')); items=list(d['files'].values())[0]['items']
-# 章节分隔段：本管线里多为「纯数字一段」，且常被标为 status=7（排除，无需翻译）
-marks=[(it['text_index'],int(it['source_text'].strip()))
-       for it in items if re.fullmatch(r'\d{1,2}', it.get('source_text','').strip() or '')]
-chs=[]; expect=1                                  # 只保留单调递增的章号序列 1,2,3,…
-for idx,n in marks:
-    if n==expect: chs.append(idx); expect+=1
-last=items[-1]['text_index']
-for i,a in enumerate(chs):
-    b=chs[i+1] if i+1<len(chs) else last+1
-    u=sum(1 for it in items if a<=it['text_index']<b and it.get('translation_status',0)==0)
-    print(f"ch{i+1}: idx {a}-{b-1}  untrans={u}")    # 据此手工把相邻章拼成 ~200-300 段的组
-# PY
-```
-（不同 epub 的分隔段形式可能不同——也可能是 `Chapter N`、罗马数字或带状态 7 的破折号 `—`；先打印若干段确认形式。）
-
-**并发数怎么定**：组数 = 同时跑的 agent 数。Claude 订阅**不设固定的并发 agent 上限**，也没有按套餐分配的"agent 个数"——真正的约束是你的**速率预算**（每个并行 agent 独立扣同一份额度，套餐等级只决定这份预算大小）。所以并发数是经验值，不是固定数：
-
-- **每组 ~200–300 段**（上面的分组目标），保证每个 agent 的活够份量。
-- **同时真正跑 ~5–8 个**起步；看到限流 / 重试 / 明显变慢就回退，顺畅再加（套餐越高余量越大：Pro < Max 5× < Max 20×）。
-- **组数 > 并发数就分波次**：发一批 → `wait` 收完 → 再发下一批，别一次性全发。
-- 别"一章一个"：章长不均会让你空等最长那章，且组太碎主控收口/串行写回的开销反而拖慢——**按段数均衡分组**才是重点。
-
-### 2. 抽取各组源文件（只取未译段）
-```python
-# <PFX> python - <<'PY'
-import json
-d=json.load(open('work/cache.json')); items=list(d['files'].values())[0]['items']
-groups={1:(642,884), 2:(884,1190), ...}   # {组号:(起,止)} 半开区间，按章节边界
-for g,(a,b) in groups.items():
-    seg=[{"text_index":it['text_index'],"source_text":it['source_text']}
-         for it in items if a<=it['text_index']<b and it.get('translation_status',0)==0]
-    json.dump(seg,open(f'/tmp/grp_{g}_src.json','w'),ensure_ascii=False,indent=1)
-# PY
-```
-
-### 3. 写项目级 STYLE_GUIDE.md
-所有 agent 必须产出**完全一致**的风格，光靠锁定表不够。用 `references/style_guide_template.md` 生成本书的
-`<PROJ>/skill/references/STYLE_GUIDE.md`（标点、空格、人名/专名处理、日期格式、新名保留原文等；具体规则摘自用户提示词），让每个 agent 先读它。
-
-### 4. 并发派发 subagent（同一条消息里发多个 Agent 调用；一批 ~5–8 个，组数更多就分波次——见步骤 1「并发数怎么定」）
-每个 agent 的 prompt 必须自包含（见下方模板）。关键点：
-- 先**读** STYLE_GUIDE.md + 锁定表 + translation_rules.md。
-- 读自己的 `/tmp/grp_N_src.json`，逐段翻译，**1:1 对应**（输出条数==输入条数，`text_index` 不变、顺序不变，不合并/拆分/漏译）。
-- 用 **Python builder 脚本**产出 `/tmp/trans_N.json`（避免手写 JSON 转义出错；正文用中文标点“”『』《》就不会和 JSON 的 ASCII `"` 冲突）。脚本结尾断言「无缺失 index、条数==输入」。
-- 把保留为英文的新专名写入 `/tmp/newterms_N.txt`（每行一个）。
-- **禁止**碰 `cache.json`、禁止跑任何 `batch write`。
-
-### 5. 校验各输出
-```python
-for g in groups:
-    src=json.load(open(f'/tmp/grp_{g}_src.json')); tr=json.load(open(f'/tmp/trans_{g}.json'))
-    assert [x['text_index'] for x in src]==[x['text_index'] for x in tr]   # 条数+索引+顺序
-    assert all(x['translated_text'].strip() for x in tr)                   # 无空译
-    kagi=sum(x['translated_text'].count('「') for x in tr)                  # 风格漂移探测
-```
-**断言失败怎么办**：若某组条数/索引对不上、或有空译，**重派那一个 agent**（把校验结果连同要求 1:1 的强调一起回传），
-其余组的产出不受影响、无需重跑。不要带着不对齐的文件去写回——写回按 `text_index` 匹配，错位会污染缓存。
-
-### 6. 归一化风格漂移（实测必查的三处）
-不同 agent 会有细微漂移，主控统一收口：
-| 漂移 | 探测 | 修正 |
-|------|------|------|
-| 对话引号用了「」而非“” | 统计每组 `「` 数量 | 该组 `「→“`、`」→”`（内层 `『』` 保持） |
-| 译名/称谓/风格各 agent 不一致 | 抽查关键人名、头衔、口头禅等 | 对照用户提示词 + 锁定表统一改写 |
-| 新译名各自音译 | 看 newterms | 统一「保留原文」，需要中文时主控定一次、回写锁定表 |
-
-### 7. 串行写回 + 收尾
 ```bash
-for g in 1 2 3 4 5 6 7; do
-  <PFX> -m ainiee_translate.batch write <PROJ>/work/cache.json /tmp/trans_$g.json
+<PFX> -m ainiee_translate.batch split <PROJ>/work/cache.json \
+  --target 300 --out-dir <PROJ>/work/par --context 20
+```
+
+- 只取 `status=0` 段；按 epub spine 文件（`extra.item_id`）**在章节边界切**，贪心凑到 `--target` 段左右；
+  单章超过 1.5×target 自行切块；尾巴不足 0.4×target 并入前一组。非 epub 无章节信息时按定长切。
+- 每组产出 `par/grp_N_src.json`（`{text_index, source_text}` 数组，subagent 的输入）和
+  `par/grp_N_ctx.json`（该组**前 20 段**的原文+已有译文，只读上下文：章首的代词性别、说话人、上一章结尾靠它）。
+- stdout 是分组计划（组号、段数、index 范围、章节 id）。
+
+**并发数怎么定**：组数 = 同时跑的 agent 数。约束不是固定上限而是速率预算：**~300 段一组、同时 5–8 个**起步，
+限流就回退；组数多于并发数就**分波**发（发一批 → 收完 → 下一批）。别一章一个：章长不均会空等最长那章。
+
+### 2. 每组一份瘦身词汇表
+
+```bash
+for f in <PROJ>/work/par/grp_*_src.json; do
+  n=$(basename "$f" _src.json | sed 's/grp_//')
+  <PFX> -m ainiee_translate.glossary filter --locked <PROJ>/work/glossary.locked.json \
+       --for "$f" --out <PROJ>/work/par/g_${n}.json
 done
 ```
-然后：合并 `newterms_*` 进锁定表（默认 `keep_source`）→ 全书 `verify` → 修正 → `export`。
-`verify` 的 `name_not_preserved` 常见**假阳性**：城市名/同名词（如 Paris=巴黎）、含冠词的别名（`the Basileus`）。逐条确认是真问题再改；可在锁定表里把会误报的别名去掉。
 
-`translation_status=7` 的段（章号、`—` 分隔符等）是被排除项，**无需翻译、不必写回**；`export` 会原样保留它们。
-全书译完的判据是 `batch read` 返回 `[]`（即再无 `status=0`），而非所有段都变成已译。
+只保留该组源文里**实际出现**的角色/术语（`non_translate` 全留）。实测 66 KB 的全表过滤后约 5 KB：
+每个 agent 少读 ~20K token 的无关条目，注意力也更集中。命中率写在输出的 `_meta` 里。
+
+### 3. 写项目级 STYLE_GUIDE.md（+ 可选 BOOK_BIBLE.md）
+
+- `STYLE_GUIDE.md`：用 `references/style_guide_template.md` 生成 `<PROJ>/work/STYLE_GUIDE.md`。**要点从已确认的样章反推**：
+  样章用了全角逗号就写「全角逗号」，用了 “ ” 就写「对话用 “ ”」——之后 `batch validate` 的 `halfwidth_punct` /
+  `cjk_corner_quote` 警告就是对这两条的机械执行。
+- `BOOK_BIBLE.md`（推荐，尤其是有军衔/亲属/舰级体系的书）：翻译前先派 1–2 个便宜 agent 通读各组源文，
+  按 `references/book_bible_template.md` 抽**事实**：每个角色的性别、实衔、亲属关系、舰名与舰级、每章一句梗概。
+  Janeway 上将/中将、Irene 姑妈/姨妈这类错误，靠事后校对要改上百段；靠 bible 在译前就定死。
+
+### 4. 并发派发 subagent（同一条消息里发多个 Agent 调用；一波 ~5–8 个）
+
+每个 agent 的 prompt 自包含（模板见下）。关键点：
+- 先读：`STYLE_GUIDE.md`、`BOOK_BIBLE.md`（若有）、`par/g_N.json`（本组词汇表）、`user_prompt.md`、`<SKILL>/references/translation_rules.md`、`par/grp_N_ctx.json`。
+- 读 `par/grp_N_src.json`，逐段翻译，**1:1**（`text_index` 不变、不合并/拆分/漏译）。
+- **边译边写 JSONL**：每译 30–50 段，用一小段 Python 把这批 `{"text_index", "translated_text"}` 以 `json.dumps(ensure_ascii=False)`
+  逐行 **append** 到 `par/trans_N.jsonl`。不要攒到最后写一个大文件——中途出错只丢尾巴，且不存在手写 JSON 转义问题。
+- 保留为英文的新专名写入 `par/newterms_N.txt`（每行一个）。
+- **禁止**碰 `cache.json`、禁止跑 `batch write`。
+
+### 5. 逐组验收（一条命令）
+
+```bash
+<PFX> -m ainiee_translate.batch validate <PROJ>/work/par/grp_N_src.json <PROJ>/work/par/trans_N.jsonl
+```
+
+退出码 0 = 可写。报告分两层：
+- `hard`（必须先修）：`missing_index` / `extra_index` / `duplicate_index`、`segment`（空译、`<i>`/`<b>` 数量对不上）。
+- `warnings`（风格漂移探测）：`cjk_corner_quote`（用了「」）、`halfwidth_punct`、`ascii_ellipsis`、`inner_space`、
+  `identical_untranslated`、`too_short`/`too_long`（漏译/注水的长度比信号）等，带段号。
+
+**不过怎么办**：只重派那一组（把 hard 清单连同「1:1 对应」的强调一起回传，让它只补那些 index 到同一个 jsonl）。
+其余组不受影响。警告类先看数量：某组 `cjk_corner_quote` 几十条 = 那个 agent 用了台式引号，让它自己 sed 一遍再验；
+零星几条主控顺手改。
+
+### 6. 一次写回 + 收尾
+
+```bash
+<PFX> -m ainiee_translate.batch write <PROJ>/work/cache.json <PROJ>/work/par/trans_*.jsonl
+```
+
+- 所有组**一次**锁定/备份/加载/保存；同一 index 出现在两个文件里会拒绝（`--force` 让后者胜出）。
+- 写回闸门与 validate 相同：空译、标记不匹配、未知 index 一律拒收并列出，其余照写；退出码 1 表示有拒收。
+  项目规则允许标记数变化（如中译书名从 `<i>` 换成《》）时加 `--allow-tag-mismatch`。
+- 然后：
+  ```bash
+  <PFX> -m ainiee_translate.glossary merge-newterms --locked <PROJ>/work/glossary.locked.json <PROJ>/work/par/newterms_*.txt --apply
+  <PFX> -m ainiee_translate.glossary lint  --locked <PROJ>/work/glossary.locked.json
+  <PFX> -m ainiee_translate.verify <PROJ>/work/cache.json <PROJ>/work/glossary.locked.json
+  <PFX> -m ainiee_translate.scan   <PROJ>/work/cache.json --locked <PROJ>/work/glossary.locked.json --mode all
+  <PFX> -m ainiee_translate.audit  <PROJ>/work/cache.json --out <PROJ>/work/audit.json
+  ```
+  **分波时每波收工就做这一段**（而不是整本译完才做）：merge 进去的新词、scan 揪出的问题，下一波 agent 直接受益。
+- `verify` 的 `name_not_preserved` 常见假阳性：城市名/同名词（Paris=巴黎）、含头衔的别名。`glossary lint` 会把
+  `alias_has_title`（如 `Admiral Janeway`）和 `alias_collides`（两人共用 `Paris`）先揪出来，改表再 verify。
+
+`translation_status=7` 的段是排除项，无需翻译、不必写回。全书译完的判据是 `batch read` 返回 `[]`。
 
 ## subagent prompt 模板（按组填 {N}/{RANGE}/{COUNT}）
 
-> 你是把一本小说从源语言译成目标语言的文学译者，负责{RANGE}（{COUNT} 段）。前几章已译好并经用户确认，你的产出必须与既有风格**完全一致**。
+> 你是把一本小说从源语言译成目标语言的文学译者，负责第 {N} 组（{RANGE}，{COUNT} 段）。前几章已译好并经用户确认，你的产出必须与既有风格**完全一致**。
 >
-> 第 1 步 先**完整读**：`<PROJ>/skill/references/STYLE_GUIDE.md`、`<PROJ>/skill/references/<book>.glossary.locked.json`（人名/术语唯一真相源）、`<PROJ>/work/user_prompt.md`（用户自定义项目规则，若有）、`<SKILL>/references/translation_rules.md`。
+> 第 1 步 先**完整读**：`<PROJ>/work/STYLE_GUIDE.md`、`<PROJ>/work/BOOK_BIBLE.md`（若存在；人物性别/军衔/亲属/舰级以它为准）、`<PROJ>/work/par/g_{N}.json`（本组词汇表，人名/术语唯一真相源）、`<PROJ>/work/user_prompt.md`（项目规则，若有）、`<SKILL>/references/translation_rules.md`、`<PROJ>/work/par/grp_{N}_ctx.json`（紧接在你这组之前的 20 段原文与译文，只读，用来接住语境和风格）。
 >
-> 第 2 步 读输入 `/tmp/grp_{N}_src.json`（`{"text_index","source_text"}` 数组，{COUNT} 段）。
+> 第 2 步 读输入 `<PROJ>/work/par/grp_{N}_src.json`（`{"text_index","source_text"}` 数组，{COUNT} 段）。
 >
-> 第 3 步 逐段译成目标语言，硬性规则：人名/专名保留原文（除非锁定表给了译名）；人名/头衔/风格按用户提示词处理；锁定表已收录的术语用其译名、表外专名默认保留原文（不自创音译）；标点/排版/本地化（引号、空格、日期等）按目标语言惯例（见 STYLE_GUIDE）；OCR 粘连词（如 `Marlowstepped`、`intothe`）要还原边界；**1:1 对应**，不合并/拆分/漏译。
+> 第 3 步 逐段译成目标语言，硬性规则：人名/专名保留原文（除非词汇表给了译名）；头衔/风格按用户提示词与 STYLE_GUIDE；词汇表已收录的术语用其译名、表外专名默认保留原文（不自创音译）；标点/排版按 STYLE_GUIDE（对话引号用 “ ” 不用「」；与中文相邻的标点用全角）；`<i>`/`<b>` 标记原样保留、成对、包住对应内容；**1:1 对应**，不合并/拆分/漏译。
 >
-> 第 4 步 写 Python builder `/tmp/build_{N}.py`：定义 `T={index:"译文"}` 覆盖每个输入 index，载入源文件，按输入顺序构建 `[{"text_index":i,"translated_text":T[i]}]`，断言无缺失，`json.dump` 到 `/tmp/trans_{N}.json`（`ensure_ascii=False`）。正文只用中文标点，避免 ASCII `"`。跑它并打印条数、确认 0 缺失（==`{COUNT}`）。
+> 第 4 步 **边译边写**：每译完 30–50 段，用 Python 把这批以 JSONL 追加到 `<PROJ>/work/par/trans_{N}.jsonl`——每行 `json.dumps({"text_index": i, "translated_text": t}, ensure_ascii=False)`，以 `open(path, "a", encoding="utf-8")` 追加。全部译完后跑 `<PFX> -m ainiee_translate.batch validate <PROJ>/work/par/grp_{N}_src.json <PROJ>/work/par/trans_{N}.jsonl`，`hard` 不为空就修：同一 index 出现两行会被判 `duplicate_index`，所以改译文时**先删掉旧行再追加**（或整文件重写），直到退出码为 0。
 >
-> 第 5 步 把保留为英文的新专名写入 `/tmp/newterms_{N}.txt`（每行一个，没有就空文件）。
+> 第 5 步 把保留为英文的新专名写入 `<PROJ>/work/par/newterms_{N}.txt`（每行一个，没有就空文件）。
 >
-> 约束：**不要**改 `cache.json` 或任何 glossary 文件；**不要**跑 `batch write` 或任何 ainiee_translate 命令；只产出那两个 /tmp 文件。忠实完整翻译，不得概括或跳过。
+> 约束：**不要**改 `cache.json` 或任何 glossary 文件；**不要**跑 `batch write`；只产出 `trans_{N}.jsonl` 与 `newterms_{N}.txt`。忠实完整翻译，不得概括或跳过。
 >
-> 返回：译了多少段、确认条数=={COUNT}、新保留原文的专名清单。
+> 返回（只要这几行）：译了多少段；validate 是否通过（hard=0）；warnings 各类计数；新保留原文的专名清单。
 
-## 模型选择
-- 想要与采样章节同等的文学质量：让 subagent 继承父级模型（通常 Opus）。
-- 想更快/更省：用 Sonnet 做翻译，锁定表会约束术语；主控做最终一致性通读与 verify。
+## 模型选择（默认建议）
+
+- **Opus**：样章（模式 A）、BOOK_BIBLE 抽取的复核、最终一致性通读与 reconcile。
+- **Sonnet**：正文各组翻译。术语一致性靠瘦身词汇表 + validate/verify 机械保证，不靠模型档次。
+- 想要与样章同等的文学质量，再让 subagent 继承父级模型。
+
+## 用 Workflow 固化整条流水线（可选）
+
+`references/parallel_workflow.js` 是一份 Workflow 脚本模板：主控先跑 `batch split` + `glossary filter` 得到组清单，
+把组号数组作为 `args` 传入；脚本对每组 `pipeline(translate → validate → 若不过则重派一次)`，
+全部通过后返回可写回的文件清单，主控再一次 `batch write`。写回与 verify 仍留在主控手里（prod 数据只经一个入口）。

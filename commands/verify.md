@@ -5,7 +5,7 @@ allowed-tools: Bash
 对当前项目跑校验。
 
 ```bash
-AINIEE_REPO="${AINIEE_REPO:?}" PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" \
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" \
 "${AINIEE_PY:?}" -m ainiee_translate.verify work/cache.json work/glossary.locked.json
 ```
 

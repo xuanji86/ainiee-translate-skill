@@ -5,9 +5,9 @@
 **Agent 原生的长篇翻译管线** —— 让编码 agent 本身当翻译引擎，端到端译完一本书。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.5.0-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
+[![Version](https://img.shields.io/badge/version-1.6.0-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue.svg)](pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-61%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-80%20passing-brightgreen.svg)](tests/)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://claude.com/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-compatible-333.svg)](skills/ainiee-translate/references/codex-tools.md)
 
@@ -31,7 +31,7 @@
 | 术语一致性 | 每批各自为政，易漂移 | 全书共用一张**锁定词汇表**，机械校验 |
 | 中断恢复 | 自行处理 | 状态驱动（`translation_status`），重跑自动续上 |
 | 富文本 | 常被压平 | 斜体/粗体按源书写法**原样还原** |
-| 质量兜底 | 无 | `verify` + `scan` 四种发现模式 + 逐批时间戳备份 |
+| 质量兜底 | 无 | 写回闸门（空译/标记不成对拒收）+ `verify` + `audit` + `scan` 四种发现模式 + 时间戳备份 |
 
 ---
 
@@ -133,7 +133,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 
 - **状态驱动**：每段有 `translation_status`（未译/已译/已润色/排除）。`batch read` 只返回未译段，
   所以中断后重跑天然续上，无需记录进度。
-- **每批写回前自动时间戳备份**：`cache.json.bak.YYYYMMDD_HHMMSS`。
+- **写回有闸门、有锁、有备份**：空译 / `<i>` `<b>` 不成对 / 未知 index 拒收；文件锁 + 原子写；每次写前时间戳备份（默认保留最近 10 个）。
 - **agent 即引擎**：不调用任何外部翻译 API，质量由 agent 实时应用
   「AiNiee 原生提示词 ＋ 用户自定义提示词 ＋ 锁定词汇表」保证。
 - **富文本保真**：源书的行内斜体/粗体在 `source_text` 里统一成 `<i>…</i>` / `<b>…</b>` 标记，
@@ -143,7 +143,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 
 - **导入已有项目** —— 直接接管 AiNiee 工程缓存（`AinieeCacheData.json`）或既有 `cache.json`，续翻 / 润色 / 校验 / 重新导出。
 - **模块化** —— 整套任务设置（提示词、词汇表、禁翻表、风格、语言对）打包成可复用模块，一个插件应对不同书；支持从 AiNiee profile 一键导入。
-- **多 agent 并行** —— 风格锁定后可派多个 subagent 并发翻不同章节（实测 11 章 1704 段 / 7 agent / ~9 分钟）。铁律：subagent 只产出译文 JSON，**由主控串行写回**。
+- **多 agent 并行** —— 风格锁定后可派多个 subagent 并发翻不同章节（实测 11 章 1704 段 / 7 agent / ~9 分钟）。编排全是命令：`batch split` 按章节边界分组并附前文上下文，`glossary filter` 给每组一份瘦身词汇表（66 KB → ~5 KB），subagent 边译边写 JSONL，`batch validate` 逐组验收，`batch write` 一次写回全部。铁律：subagent 只产出译文文件，**由主控写回**。
 - **润色 pass** —— 可选二次加工，状态 `TRANSLATED → POLISHED`，导出自动采用润色文本。
 
 ---
@@ -152,7 +152,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 
 两层：**斜杠命令**（插件内用）和其底层 **Python CLI**（Codex / 手动 / 调试）。
 
-### 斜杠命令（15 个）
+### 斜杠命令（16 个）
 
 **翻译流程**
 
@@ -172,6 +172,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 | `/ainiee-translate:verify` | — | 校验漏译、锁定人名未保留 |
 | `/ainiee-translate:scan` | `[discover\|terms\|strays\|merges\|all]` | 补 verify 盲区（见[质量闭环](#质量闭环)）|
 | `/ainiee-translate:repair` | — | 修复存量 epub 项目的行内标记与空格 |
+| `/ainiee-translate:audit` | `[--allow-tag-mismatch]` | 机械体检：空译/标记不匹配 + 半角标点/「」/长度比等 |
 
 **模块与提示词**
 
@@ -191,9 +192,9 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 | 模块 | 用法 |
 |---|---|
 | `parse` | `--input <书> --type AutoType --out <cache.json>` |
-| `glossary` | `--config <config.json> [--analysis <路径>] --out <locked.json>` |
-| `batch` | `read <cache> --size N` · `read-translated <cache> --size N` · `write <cache> <译文.json>` |
-| `polish` | `write <cache> <润色.json>` |
+| `glossary` | `build --config <config.json> [--analysis <路径>] --out <locked.json>` · `filter --locked L --for grp_N_src.json --out g_N.json` · `lint --locked L` · `merge-newterms --locked L newterms_*.txt --apply` |
+| `batch` | `read <cache> --size N` · `read-translated <cache> --size N` · `split <cache> --target 300 --out-dir D --context 20` · `validate <src.json> <trans.jsonl>` · `write <cache> <译文.json|.jsonl>… [--force] [--allow-tag-mismatch]` |
+| `polish` | `write <cache> <润色.json|.jsonl>… [--force] [--allow-tag-mismatch]` |
 | `prompt` | `--config <config> [--out F] [--translate-system\|--polish]` |
 | `module` | `list` · `show <名>` · `create <名> [--source-language X --target-language Y]` · `load <名> [--work D]` |
 | `profile` | `import --profile <p.json> --name <名> [--target-language X] [--force]` |
@@ -202,6 +203,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 | `verify` | `<cache> <locked.json>` |
 | `scan` | `<cache> --locked <locked.json> --mode all` |
 | `repair` | `<cache> [--apply] [--list-marked]` |
+| `audit` | `<cache> [--out audit.json] [--allow-tag-mismatch]` |
 
 ---
 
@@ -272,7 +274,7 @@ examples.json        # few-shot 示例（可选）
 
 ## 质量闭环
 
-翻完不等于译对。本管线提供三件工具，**分工明确**：
+翻完不等于译对。本管线提供四件工具，**分工明确**：
 
 ### `verify` —— 词汇表执行器
 
@@ -290,7 +292,13 @@ examples.json        # few-shot 示例（可选）
 | `strays` | **幻觉插入**——译文里出现、原文却没有的英文 token（凭空错名）|
 | `merges` | 丢空格的粘连词（超长 Latin 串 / camelCase 跳变）|
 
-**推荐闭环**：`verify` 清表内硬伤 → `scan --mode all` 发现表外问题 →
+### `audit` —— 机械体检（与写回闸门同一套检查）
+
+硬伤 `empty` / `tag_mismatch`；风格警告 `halfwidth_punct`、`cjk_corner_quote`、`ascii_ellipsis`、`inner_space`、
+`identical_untranslated`、`too_short` / `too_long`（Han 字数 ÷ 源文词数的长度比，抓漏译与注水）。
+CJK 相关检查只对含 CJK 的译文生效。`glossary lint` 则查表本身：alias 带头衔、两人共用 alias、同姓角色、重复/缺译名术语。
+
+**推荐闭环**：`verify` 清表内硬伤 → `audit` 机械体检 → `glossary lint` 查表 → `scan --mode all` 发现表外问题 →
 **把确认的真名补进词汇表** → 再 `verify`（这下表全了，能守住）。
 
 ### `repair` —— 存量项目的行内标记修复
@@ -312,13 +320,13 @@ v1.4.1 及更早的 epub 解析用 `soup.get_text(strip=True)`，会丢掉行内
 ```bash
 git clone https://github.com/xuanji86/ainiee-translate-skill.git
 cd ainiee-translate-skill
-PYTHONPATH=src python -m pytest -q      # 61 tests
+PYTHONPATH=src python -m pytest -q      # 80 tests
 ./build.sh                              # src/ → skills/ 同步（含漂移守卫）
 ```
 
 **布局**：`src/ainiee_translate/` 是**唯一源**；`build.sh` 用 rsync 同步进
-`skills/ainiee-translate/scripts/` 并校验无漂移。改完 `src/` 或
-`skill/references/` 后**务必跑一次** `./build.sh`。
+`skills/ainiee-translate/scripts/` 并校验无漂移。`SKILL.md` 与 `references/` 直接住在
+`skills/ainiee-translate/` 下，不经同步。改完 `src/` 后**务必跑一次** `./build.sh`。
 
 设计文档：[docs/specs/2026-05-20-ainiee-translate-skill-design.md](docs/specs/2026-05-20-ainiee-translate-skill-design.md)
 

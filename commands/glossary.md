@@ -6,7 +6,7 @@ allowed-tools: Bash, Read, Edit
 构建锁定词汇表到当前项目 `work/`。
 
 ```bash
-AINIEE_REPO="${AINIEE_REPO:?}" PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" \
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" \
 "${AINIEE_PY:?}" -m ainiee_translate.glossary $ARGUMENTS --out work/glossary.locked.json
 ```
 

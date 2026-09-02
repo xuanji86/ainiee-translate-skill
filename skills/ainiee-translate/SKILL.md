@@ -18,7 +18,7 @@ parse → 构建锁定词汇表 → 逐章翻译（agent 按规则） → 写回
 - 进度状态驱动（`translation_status`）：中断后重跑自动从首个未译段继续，天然可恢复。
 - 每批写回前自动备份（时间戳）：`cache.json.bak.YYYYMMDD_HHMMSS`。
 
-本技能自带管道脚本（`scripts/ainiee_translate/`），无需单独 `pip install` 本包；唯一外部依赖是一份本地 **AiNiee 仓库**（用作解析/导出库）及其 venv。
+本技能自带管道脚本（`scripts/ainiee_translate/`），无需单独 `pip install` 本包；只需一个装了几个轻量库的 Python venv（见下）。
 
 ---
 
@@ -270,22 +270,33 @@ v1.4.1 及更早版本的 epub 解析用 `soup.get_text(strip=True)` 抽文本�
   "$WORK/work/translations_batch_001.json"
 ```
 
-- 写回前自动创建带时间戳的备份：`cache.json.bak.YYYYMMDD_HHMMSS`。
-- 成功后打印：`applied N translation(s)`。
-- 重复执行步骤 5a → 5c 直到 `batch read` 返回空数组（`[]`）为止。
+- 写回前自动创建带时间戳的备份 `cache.json.bak.YYYYMMDD_HHMMSS`（默认只保留最近 10 个，`AINIEE_BACKUP_KEEP` 可调，0 = 不清理；手工备份如 `cache.json.pre_xxx` 不受影响）；写入是原子的（临时文件 + rename），并持有 `cache.json.lock` 文件锁。
+- **写回闸门**：空译文、`<i>`/`<b>` 数量与源文不符、未知 `text_index` 一律拒收并逐条列出，其余照写；退出码 1 表示有拒收。项目规则允许标记数变化（如中译书名从 `<i>` 改《》）时加 `--allow-tag-mismatch`；`--force` 只保留「未知 index」这一条拒收。同时统计风格警告（半角标点、「」、长度比异常等，见 `audit`）。
+- 可以一次给多个文件，也接受 **JSONL**（每行一个 `{"text_index","translated_text"}`）：`batch write cache.json t1.json t2.jsonl …`——一次备份、一次加载、一次保存。
+- 成功后打印：`applied N of M`。重复执行步骤 5a → 5c 直到 `batch read` 返回空数组（`[]`）为止。
 
 ---
 
 ## 步骤 5+：多 agent 并行翻译（可选，大书加速）
 
 书很大、章节相互独立、且**风格已用模式 A 锁定**后，可派多个 subagent 并发翻译不同章节范围，
-墙钟时间≈最慢的 agent（实测 11 章 1704 段用 7 个 agent 约 9 分钟译完）。
+墙钟时间≈最慢的 agent（实测 11 章 1704 段用 7 个 agent 约 9 分钟译完）。编排的每一步都是一条命令：
 
-**唯一铁律：subagent 绝不写 `cache.json`**（并发「读改写」会损坏文件）。subagent 只产出译文 JSON 文件，
-**由主控 agent 串行 `batch write` 回写**。各 agent 共享同一份锁定表 + `references/translation_rules.md` + 项目级
-`STYLE_GUIDE.md`（用 `references/style_guide_template.md` 生成）以保证风格一致；新实体一律「保留原文 + 记录」。
+```bash
+<PFX> -m ainiee_translate.batch split "$WORK/work/cache.json" --target 300 --out-dir "$WORK/work/par" --context 20   # 按章节边界分组 → grp_N_src.json + grp_N_ctx.json（前 20 段只读上下文）
+<PFX> -m ainiee_translate.glossary filter --locked "$WORK/work/glossary.locked.json" --for "$WORK/work/par/grp_1_src.json" --out "$WORK/work/par/g_1.json"   # 每组一份只含本组出现条目的瘦身词汇表（66 KB → ~5 KB）
+#   … subagent 边译边 append par/trans_N.jsonl …
+<PFX> -m ainiee_translate.batch validate "$WORK/work/par/grp_1_src.json" "$WORK/work/par/trans_1.jsonl"   # 索引齐全/无空译/标记成对 + 风格警告；不过只重派那一组
+<PFX> -m ainiee_translate.batch write "$WORK/work/cache.json" "$WORK/work/par"/trans_*.jsonl                 # 一次写回全部
+<PFX> -m ainiee_translate.glossary merge-newterms --locked "$WORK/work/glossary.locked.json" "$WORK/work/par"/newterms_*.txt --apply
+```
 
-完整流程（拆分、抽取、派发模板、风格漂移归一化、串行写回、收尾 verify）见 **`references/parallel_translation.md`**。
+**唯一铁律：subagent 绝不写 `cache.json`**。subagent 只产出 `trans_N.jsonl` + `newterms_N.txt`，**主控 validate 后一次 `batch write`**。
+各 agent 共享 `STYLE_GUIDE.md`（用 `references/style_guide_template.md` 生成，要点从已确认的样章反推）+ 可选 `BOOK_BIBLE.md`
+（`references/book_bible_template.md`：译前抽出人物性别/实衔/亲属/舰级等事实，防止跨章一致的事实性错译）+ 本组瘦身词汇表 + `translation_rules.md`。
+新实体一律「保留原文 + 记录」，每波收工就 merge-newterms + scan，下一波直接受益。
+
+完整流程、派发 prompt 模板、模型分层建议、Workflow 脚本模板见 **`references/parallel_translation.md`**。
 
 ---
 
@@ -355,9 +366,18 @@ verify 是**词汇表执行器**，不是**发现器**。它只能发现「锁�
 - `strays`：**模型幻觉插入**——译文里出现、但该段原文里没有的英文 token（凭空写出的错名 `Vic`/`Sam`/`Sef`、顶替"the guard"的 `Lt`）。是**复查列表非合格门**：含一贯保留的外星术语，需人眼筛；真信号是无来由的短错名。
 - `merges`：原文里**超长 Latin 串或 camelCase 跳变**的丢空格粘连词（`thenaiskosfragment`、`speciesDraco`、`TheAlexandria`）；调小 `--min-merge-len` 可挖更短的。
   - ⚠️ 这类粘连的**主因**曾是 epub 解析器逐片段 strip（`her <i>blade</i> fell` → `herbladefell`），已在解析层修复。新解析的项目里 `merges` 命中数应大幅下降；**存量项目**先跑 `repair --apply` 再看，剩下的才是源书本身的排版缺陷。
-  - ⚠️ 这类粘连的**主因**曾是 epub 解析器逐片段 strip（`her <i>blade</i> fell` → `herbladefell`），已在解析层修复。新解析的项目里 `merges` 命中数应大幅下降；**存量项目**先跑 `repair --apply` 再看，剩下的才是源书本身的排版缺陷。
 
-**推荐校对闭环**：`verify`（清掉表内硬伤）→ `scan --mode all`（`discover`→`inconsistent` 全改、`never_preserved` 挑真名；`terms`→补回被漏成英文的术语；`strays`→揪幻觉错名；`merges`→收粘连词）→ **把确认的真名/地名补进 `glossary.locked.json` 的 `characters`，保留英文的通名补进 `terms`（`keep_source:true`），有中文译名的术语进 `terms`（带 `dst`）** → 再 `verify`（这下表全了，能守住；忽略代词省略类误报）。改已润色段一律用 `polish write` 以保住状态。
+### 步骤 7++：`audit` 机械体检与 `glossary lint`
+
+```bash
+<PFX> -m ainiee_translate.audit "$WORK/work/cache.json" --out "$WORK/work/audit.json"      # 空译/标记不匹配（硬伤）+ 半角标点/「」/省略号/中文内空格/未译原样搬运/长度比异常（警告）
+<PFX> -m ainiee_translate.glossary lint --locked "$WORK/work/glossary.locked.json"         # alias 带头衔（verify 假阳性源）、两人共用同一 alias、同姓角色、重复/缺译名的术语
+```
+
+`audit` 与 `batch write` 闸门用同一套检查，所以正常写入的项目 `empty`/`tag_mismatch` 应为 0；警告类按段号抽查。
+`glossary lint` 的 `alias_has_title`（如 `Admiral Janeway`）会让 verify 在头衔被翻译的每一处都误报，`alias_collides`（`Paris` 同时挂在 Owen Paris 与 Tom Paris 下）说明清洗时把两个人并了——改表再 verify。
+
+**推荐校对闭环**：`verify`（清掉表内硬伤）→ `audit`（机械硬伤与风格）→ `glossary lint`（表结构）→ `scan --mode all`（`discover`→`inconsistent` 全改、`never_preserved` 挑真名；`terms`→补回被漏成英文的术语；`strays`→揪幻觉错名；`merges`→收粘连词）→ **把确认的真名/地名补进 `glossary.locked.json` 的 `characters`，保留英文的通名补进 `terms`（`keep_source:true`），有中文译名的术语进 `terms`（带 `dst`）** → 再 `verify`（这下表全了，能守住；忽略代词省略类误报）。改已润色段一律用 `polish write` 以保住状态。
 
 > 经验：写自查脚本做名字比对时，先归一化撇号（弯/直撇号 `'`/`'` 统一），否则 `Mak'ala`、`Quark's`、`O'Brien` 会因撇号不同被误判为「消失」。verify/scan 内部已统一处理。
 
@@ -401,6 +421,17 @@ $PFX -m ainiee_translate.repair "$WORK/work/cache.json" --apply
 
 # 发现（补 verify 盲区：表外被音译/丢失的专名 + 术语漏译 + 幻觉错名 + 粘连词）
 $PFX -m ainiee_translate.scan "$WORK/work/cache.json" --locked "$WORK/work/glossary.locked.json" --mode all
+
+# 机械体检 / 词汇表结构检查 / 并入并行 agent 记录的新词
+$PFX -m ainiee_translate.audit "$WORK/work/cache.json" --out "$WORK/work/audit.json"
+$PFX -m ainiee_translate.glossary lint --locked "$WORK/work/glossary.locked.json"
+$PFX -m ainiee_translate.glossary merge-newterms --locked "$WORK/work/glossary.locked.json" "$WORK/work/par"/newterms_*.txt --apply
+
+# 并行翻译：分组 / 瘦身词汇表 / 验收 / 一次写回多组（详见 references/parallel_translation.md）
+$PFX -m ainiee_translate.batch split "$WORK/work/cache.json" --target 300 --out-dir "$WORK/work/par" --context 20
+$PFX -m ainiee_translate.glossary filter --locked "$WORK/work/glossary.locked.json" --for "$WORK/work/par/grp_1_src.json" --out "$WORK/work/par/g_1.json"
+$PFX -m ainiee_translate.batch validate "$WORK/work/par/grp_1_src.json" "$WORK/work/par/trans_1.jsonl"
+$PFX -m ainiee_translate.batch write "$WORK/work/cache.json" "$WORK/work/par"/trans_*.jsonl
 ```
 
 ---
@@ -443,5 +474,6 @@ A: verify 只执行**锁定表里登记过的**人名，且无法识别张冠李
 | `repair` | 修复存量 epub 项目的行内标记与空格（旧解析器遗留）|
 | `glossary` / `export <输入>` / `verify` / `status` | 词汇表 / 导出 / 校验 / 状态 |
 | `scan [discover\|terms\|strays\|merges\|all]` | 补 verify 盲区：表外被音译/丢失的专名(`discover`)、被漏译成英文的术语(`terms`)、幻觉插入的错名(`strays`)、粘连词(`merges`)|
+| `audit [--allow-tag-mismatch]` | 机械体检：空译/标记不匹配（硬伤）+ 半角标点/「」/长度比等风格警告 |
 
-命令脚本路径用 `${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts`，并需用户设好 `AINIEE_REPO`/`AINIEE_PY`。
+命令脚本路径用 `${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts`，并需用户设好 `AINIEE_PY`（`AINIEE_REPO` 仅 PDF/Office 回退才需要）。

@@ -6,7 +6,7 @@ allowed-tools: Bash
 导出当前项目的成品（保留原书结构与标签；已润色的段落自动用润色文本）。
 
 ```bash
-AINIEE_REPO="${AINIEE_REPO:?}" PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" \
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" \
 "${AINIEE_PY:?}" -m ainiee_translate.export --cache work/cache.json --output out/ --input "$1"
 ```
 

@@ -6,7 +6,7 @@ allowed-tools: Bash, Read
 
 ```bash
 echo "=== 已绑模块 ==="; cat work/active_module.json 2>/dev/null || echo "(未绑定模块)"
-PFX="AINIEE_REPO=${AINIEE_REPO:-} PYTHONPATH=${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts ${AINIEE_PY:-python3}"
+PFX="PYTHONPATH=${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts ${AINIEE_PY:-python3}"
 echo "=== 下一批未译（空=翻译完成）==="; eval $PFX -m ainiee_translate.batch read work/cache.json --size 1 2>/dev/null || echo "(无 cache.json 或环境未就绪)"
 echo "=== 下一批待润色 ==="; eval $PFX -m ainiee_translate.batch read-translated work/cache.json --size 1 2>/dev/null
 ```

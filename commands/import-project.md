@@ -8,7 +8,7 @@ allowed-tools: Bash
 **先列出可导入的 AiNiee 工程**（无参数或 `$1` 为 `list` 时）：
 
 ```bash
-AINIEE_REPO="${AINIEE_REPO:?请先设 AINIEE_REPO}" \
+\
 PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" \
 "${AINIEE_PY:?请先设 AINIEE_PY（AiNiee venv 的 python）}" \
   -m ainiee_translate.project list
@@ -19,7 +19,7 @@ PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" \
 **导入**：`$1` = AiNiee 项目ID（来自上面的 `project_id`）或 `AinieeCacheData.json` 路径；`$2` = 目标项目目录。项目ID 用 `--ainiee`，文件路径用 `--cache`：
 
 ```bash
-AINIEE_REPO="${AINIEE_REPO:?}" \
+\
 PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" \
 "${AINIEE_PY:?}" \
   -m ainiee_translate.project import --ainiee "$1" --work "$2"

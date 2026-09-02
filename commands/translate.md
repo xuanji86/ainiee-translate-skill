@@ -6,7 +6,7 @@ context: fork
 ---
 用 **ainiee-translate 技能** 把 `$1` 端到端翻译完。
 
-前置：确认环境变量 `AINIEE_REPO`、`AINIEE_PY` 已设（脚本路径 `${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts`，作为 `PYTHONPATH`）；未设则先按技能 SKILL.md「前置依赖与安装」提示用户设置，再继续。
+前置：确认环境变量 `AINIEE_PY` 已设（`AINIEE_REPO` 可选，仅 PDF/Office）（脚本路径 `${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts`，作为 `PYTHONPATH`）；未设则先按技能 SKILL.md「前置依赖与安装」提示用户设置，再继续。
 
 步骤：
 1. 准备项目工作目录（如 `~/<书名>-translate/{work,out}`）。

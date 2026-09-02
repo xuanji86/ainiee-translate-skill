@@ -11,6 +11,8 @@ disable-model-invocation: true
 - `/ainiee-translate:polish [批大小]` —— 对已译文本跑润色 pass
 - `/ainiee-translate:export <输入文件>` —— 导出成品
 - `/ainiee-translate:verify` —— 校验残留规则违规
+- `/ainiee-translate:audit` —— 机械体检（空译/标记不匹配/半角标点/「」/长度比）
+- `/ainiee-translate:scan [模式]` —— 发现词汇表缺口与幻觉错名
 - `/ainiee-translate:status` —— 查看进度（已绑模块 / 计数 / 续跑点）
 
 **模块（不同任务的设置包）**
@@ -22,4 +24,4 @@ disable-model-invocation: true
 **提示词**
 - `/ainiee-translate:gen-prompt translate|polish [模块名]` —— 让 agent 帮你起草翻译/润色提示词
 
-> 多数命令需要先设好环境变量 `AINIEE_REPO`（本地 AiNiee 仓库）、`AINIEE_PY`（AiNiee venv 的 python）。详见技能 SKILL.md「前置依赖与安装」。
+> 多数命令需要先设好环境变量 `AINIEE_PY`（装了依赖的 venv python）；`AINIEE_REPO` 可选，仅 PDF/Office 回退时需要。详见技能 SKILL.md「前置依赖与安装」。

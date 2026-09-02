@@ -6,7 +6,7 @@ allowed-tools: Bash
 把 AiNiee profile `$1` 导入为模块 `$2`（提取语言、翻译/润色提示词、术语表、禁翻表、风格/世界观/角色）。
 
 ```bash
-AINIEE_REPO="${AINIEE_REPO:?请先设 AINIEE_REPO}" \
+\
 PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" \
 "${AINIEE_PY:?请先设 AINIEE_PY（AiNiee venv 的 python）}" \
   -m ainiee_translate.profile import --profile "$1" --name "$2"
