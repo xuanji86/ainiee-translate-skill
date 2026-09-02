@@ -498,10 +498,16 @@ A: verify 只执行**锁定表里登记过的**人名，且无法识别张冠李
 <PFX> -m ainiee_translate.progress work/cache.json --watch     # 另开终端分屏：rich 实时面板，2 秒刷新
 <PFX> -m ainiee_translate.progress work/cache.json --once      # 渲染一次（斜杠命令 /ainiee-translate:progress 就是它）
 <PFX> -m ainiee_translate.progress work/cache.json --line      # 一行摘要：📖 Warpath 2391/2507 (95%) · ▶3 18/24 ▶4 25/25 · ✓1,2 · 4.1/min
-<PFX> -m ainiee_translate.progress work/cache.json --json      # 完整快照
+<PFX> -m ainiee_translate.progress work/cache.json --json      # 完整快照（--out FILE 写文件）
+<PFX> -m ainiee_translate.progress work/cache.json --serve 8765 --open   # 本地网页看板：任何浏览器、Claude Code Desktop 都能开，2 秒轮询
 ```
 
 每组状态：`running`（jsonl 在长）→ `ready`（条数够且无空译/标记问题，可 `batch write`）或 `needs_fix`；jsonl 超过 `--stall` 秒（默认 180）没动就标 `stalled`；写回后变 `written`。面板底部给速率、剩余段的 ETA、卡死与可写回的组。**润色阶段**（`split --stage polish` 产生的 `par/_stage.json`）：顶部多一条润色进度条，组文件识别 `polished_N.jsonl`，`written` 指全部已置 POLISHED。
+
+**Claude Code Desktop / 手机**（无终端分屏时）两条路：
+1. `--serve`：本地 stdlib 服务，浏览器打开 `http://127.0.0.1:8765/`，与 `--watch` 同一份快照、真实时；Desktop 里点链接即可。
+2. **Artifact 看板**（云端、可分享、手机能看）：一个声明了 `db` 能力的 Artifact 页面订阅文档 `progress/current`。主控 agent 每收到一组完成通知或每波写回后执行
+   `progress --json --out work/progress_snapshot.json`，再用 Artifact 工具 `write_db`（`db_op: set`，`collection: progress`，`doc_id: current`，`file_path` 指向该文件）推送；页面实时刷新。粒度是「组完成 / 每波」，不是 2 秒——中途要更细就让主控定时推。看板页面源码在 `references/progress_artifact.html`，任何账号都能用它重新发布一份。
 
 **statusline 接入**：`--watch` 与 `--line` 都会把一行摘要写到 `~/.ainiee-translate/progress.line`；在 statusline 脚本里加几行「文件存在且 5 分钟内更新过就拼进状态栏」，会话底栏就常驻进度，不用切窗口。示例（macOS `stat -f %m`）：
 

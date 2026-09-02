@@ -88,6 +88,7 @@ done
 <PFX> -m ainiee_translate.progress <PROJ>/work/cache.json --watch
 ```
 每组一行：`running` / `stalled`（>180 秒没 append）/ `ready`（可写回）/ `needs_fix` / `written`，附速率与 ETA。它同时把一行摘要写进 `~/.ainiee-translate/progress.line` 供 statusline 显示（见 SKILL.md 附录 D）。
+没有终端分屏（Claude Code Desktop）就用 `--serve 8765 --open` 开本地网页；要在手机上看就用 Artifact 看板：主控在**每次收到 subagent 完成通知**和**每波写回后**跑 `progress --json --out <PROJ>/work/progress_snapshot.json`，再 `write_db` 到 `progress/current`（附录 D）。
 
 ### 4. 并发派发 subagent（同一条消息里发多个 Agent 调用；一波 ~5–8 个）
 

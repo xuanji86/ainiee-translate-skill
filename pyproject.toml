@@ -20,6 +20,9 @@ dependencies = [
 testpaths = ["tests"]
 addopts = "-q"
 
+[tool.setuptools.package-data]
+ainiee_translate = ["*.html"]
+
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"

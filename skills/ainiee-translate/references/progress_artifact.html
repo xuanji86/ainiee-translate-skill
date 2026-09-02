@@ -1,0 +1,178 @@
+<title>译程看板</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#f2f4f7; --card:#ffffff; --ink:#17202a; --mut:#5c6773; --line:#dde2e8; --soft:#eaeef3;
+  --acc:#0f766e; --acc-soft:#d7efec; --pol:#6d4fc2; --pol-soft:#e7e0f7;
+  --run:#1d5fd3; --stall:#b42323; --ready:#177245; --fix:#a9600a; --dim:#8a94a0;
+  --pill-run:#dbe7fb; --pill-stall:#f9dcdc; --pill-ready:#d9f0e3; --pill-fix:#fbe8cf; --pill-dim:#eceff2;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0f1418; --card:#161c22; --ink:#e6e9ec; --mut:#98a3ae; --line:#26303a; --soft:#1d252d;
+    --acc:#2fb3a6; --acc-soft:#123c39; --pol:#a78bfa; --pol-soft:#2a2149;
+    --run:#6ea0ff; --stall:#ff7b7b; --ready:#5fd39a; --fix:#f0b35a; --dim:#6b7784;
+    --pill-run:#1b2f52; --pill-stall:#4a1d1d; --pill-ready:#173a2a; --pill-fix:#4a3413; --pill-dim:#222a32;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0f1418; --card:#161c22; --ink:#e6e9ec; --mut:#98a3ae; --line:#26303a; --soft:#1d252d;
+  --acc:#2fb3a6; --acc-soft:#123c39; --pol:#a78bfa; --pol-soft:#2a2149;
+  --run:#6ea0ff; --stall:#ff7b7b; --ready:#5fd39a; --fix:#f0b35a; --dim:#6b7784;
+  --pill-run:#1b2f52; --pill-stall:#4a1d1d; --pill-ready:#173a2a; --pill-fix:#4a3413; --pill-dim:#222a32;
+}
+body{background:var(--bg);color:var(--ink);font:14px/1.55 "IBM Plex Sans","PingFang SC","Noto Sans CJK SC",system-ui,sans-serif;margin:0}
+.wrap{max-width:1040px;margin:0 auto;padding:28px 22px 40px;display:grid;gap:18px}
+.mono{font-family:"IBM Plex Mono","SF Mono",Menlo,monospace;font-variant-numeric:tabular-nums}
+header{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px 16px}
+h1{font-size:22px;font-weight:600;margin:0;letter-spacing:-.01em;text-wrap:balance}
+.chip{font-size:12px;padding:2px 9px;border-radius:999px;background:var(--soft);color:var(--mut);letter-spacing:.02em}
+.chip.pol{background:var(--pol-soft);color:var(--pol)}
+.meta{margin-left:auto;font-size:12px;color:var(--mut)}
+.meta b{color:var(--ink);font-weight:500}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.bars{display:grid;gap:14px}
+.row{display:grid;grid-template-columns:4.5em 1fr auto;align-items:center;gap:14px}
+.row .lab{font-size:13px;color:var(--mut)}
+.row .num{font-size:13px;color:var(--mut)}
+.row .num b{color:var(--ink);font-weight:500}
+.track{height:12px;border-radius:6px;background:var(--soft);overflow:hidden}
+.track i{display:block;height:100%;border-radius:6px;background:var(--acc);transition:width .4s ease}
+.track.pol i{background:var(--pol)}
+.track.g{height:8px}.track.g i{background:var(--run)}
+table{width:100%;border-collapse:collapse}
+th{font-size:11.5px;font-weight:500;color:var(--mut);text-align:left;padding:0 8px 8px;letter-spacing:.04em;text-transform:uppercase}
+td{padding:9px 8px;border-top:1px solid var(--line);vertical-align:middle;white-space:nowrap}
+td.chap{color:var(--mut);max-width:220px;overflow:hidden;text-overflow:ellipsis}
+td.trk{width:24%}
+th.r,td.r{text-align:right}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:500;letter-spacing:.01em}
+.running{background:var(--pill-run);color:var(--run)}
+.stalled{background:var(--pill-stall);color:var(--stall)}
+.ready{background:var(--pill-ready);color:var(--ready)}
+.needs_fix{background:var(--pill-fix);color:var(--fix)}
+.pending,.written{background:var(--pill-dim);color:var(--dim)}
+.hard{color:var(--stall);font-weight:500}
+.empty{color:var(--dim);padding:14px 8px}
+.foot{display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:12px;font-size:13px;color:var(--mut)}
+.foot b{color:var(--ink);font-weight:500}
+.foot .bad{color:var(--stall)}.foot .good{color:var(--ready)}
+.events{font-size:12.5px;color:var(--mut);display:grid;gap:4px}
+.events .t{display:inline-block;width:6.5em;color:var(--dim)}
+.note{font-size:12.5px;color:var(--mut);border-left:3px solid var(--line);padding:6px 12px;margin:0}
+.note code{font-family:"IBM Plex Mono",Menlo,monospace;font-size:12px;background:var(--soft);padding:1px 5px;border-radius:4px}
+:focus-visible{outline:2px solid var(--run);outline-offset:2px}
+@media (max-width:640px){
+  .wrap{padding:18px 14px 28px}
+  th.chap,td.chap,th.age,td.age{display:none}
+  .meta{margin-left:0;width:100%}
+}
+@media (prefers-reduced-motion: reduce){.track i{transition:none}}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1 id="title">译程看板</h1>
+    <span class="chip" id="stage">等待数据</span>
+    <div class="meta" id="meta">正在连接数据库…</div>
+  </header>
+
+  <section class="card">
+    <div class="bars" id="bars">
+      <div class="row"><span class="lab">翻译</span><div class="track"><i style="width:0%"></i></div><span class="num mono">—</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th class="r">组</th><th class="chap">章节</th><th>进度</th><th class="r">段</th><th>状态</th>
+          <th class="r age">更新</th><th class="r" title="硬伤：空译 / 标记不匹配 / 重复索引">硬伤</th><th class="r" title="风格警告">警告</th><th class="r">新词</th>
+        </tr></thead>
+        <tbody id="rows"><tr><td colspan="9" class="empty">尚无并行分组</td></tr></tbody>
+      </table>
+    </div>
+    <div class="foot" id="foot"></div>
+  </section>
+
+  <section class="card">
+    <div class="events" id="events">尚无写回记录</div>
+  </section>
+
+  <p class="note" id="note" hidden>这一页读的是主控 agent 推送的快照：每收到一组完成通知或每波写回后运行
+    <code>progress --json --out work/progress_snapshot.json</code> 并写入数据库文档 <code>progress/current</code>。本地实时视图用 <code>progress --watch</code> 或 <code>--serve</code>。</p>
+</div>
+
+<script>
+(function () {
+  var ICON = {running:"▶", stalled:"⏸", ready:"✓", needs_fix:"✗", pending:"·", written:"■"};
+  var LABEL = {running:"在译", stalled:"卡住", ready:"可写回", needs_fix:"待修", pending:"未开始", written:"已写回"};
+  var $ = function (id) { return document.getElementById(id); };
+  var prev = null;
+
+  function age(s) { if (s == null) return "—"; return s < 90 ? s + "s" : Math.floor(s / 60) + "m"; }
+  function ago(ts) { var d = Math.max(0, Math.round(Date.now() / 1000 - ts)); return d < 60 ? d + " 秒前" : d < 3600 ? Math.floor(d / 60) + " 分钟前" : Math.floor(d / 3600) + " 小时前"; }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]; }); }
+
+  function render(d) {
+    var t = d.total || {}, groups = d.groups || [], polishing = d.stage === "polish" || (t.polished || 0) > 0;
+    $("title").textContent = d.project || "译程看板";
+    var st = $("stage"); st.textContent = d.stage === "polish" ? "润色阶段" : "翻译阶段"; st.className = "chip" + (d.stage === "polish" ? " pol" : "");
+    $("meta").innerHTML = "快照 <b>" + ago(d.ts) + "</b> 由主控推送 · " + esc(d.work || "");
+
+    var bars = '<div class="row"><span class="lab">翻译</span><div class="track"><i style="width:' + (t.done_pct || 0) + '%"></i></div>' +
+      '<span class="num mono"><b>' + (t.done || 0) + '</b>/' + (t.workable || 0) + ' · ' + (t.done_pct || 0) + '% · 待译 ' + (t.untranslated || 0) + '</span></div>';
+    if (polishing) bars += '<div class="row"><span class="lab">润色</span><div class="track pol"><i style="width:' + (t.polished_pct || 0) + '%"></i></div>' +
+      '<span class="num mono"><b>' + (t.polished || 0) + '</b>/' + (t.workable || 0) + ' · ' + (t.polished_pct || 0) + '% · 待润色 ' + (t.translated || 0) + '</span></div>';
+    $("bars").innerHTML = bars;
+
+    if (groups.length) {
+      $("rows").innerHTML = groups.map(function (g) {
+        var lines = Math.min(g.lines, g.src), warn = 0, w = g.warnings || {}; for (var k in w) warn += w[k];
+        var hard = (g.seg_hard || 0) + (g.dups || 0) + (g.extra || 0);
+        return '<tr><td class="r mono">' + g.group + '</td><td class="chap">' + esc((g.chapters || []).join(" ") || (g.first_index + "–" + g.last_index)) + '</td>' +
+          '<td class="trk"><div class="track g"><i style="width:' + g.pct + '%"></i></div></td>' +
+          '<td class="r mono">' + lines + '/' + g.src + (g.bad_lines ? ' <span title="半截行，agent 正在写">+' + g.bad_lines + '?</span>' : '') + '</td>' +
+          '<td><span class="pill ' + g.state + '">' + ICON[g.state] + ' ' + LABEL[g.state] + '</span></td>' +
+          '<td class="r mono age">' + age(g.age_sec) + '</td><td class="r mono' + (hard ? ' hard' : '') + '">' + hard + '</td>' +
+          '<td class="r mono">' + warn + '</td><td class="r mono">' + (g.newterms || "") + '</td></tr>';
+      }).join("");
+    } else {
+      $("rows").innerHTML = '<tr><td colspan="9" class="empty">尚无并行分组 — 串行模式，看上方全书进度</td></tr>';
+    }
+
+    var live = groups.filter(function (g) { return g.state !== "written"; });
+    var inflight = live.reduce(function (a, g) { return a + Math.min(g.lines, g.src); }, 0);
+    var remaining = live.reduce(function (a, g) { return a + g.src - Math.min(g.lines, g.src); }, 0);
+    var rate = null;
+    if (prev && d.ts > prev.ts) rate = Math.max(0, (inflight - prev.lines) / ((d.ts - prev.ts) / 60));
+    prev = {ts: d.ts, lines: inflight};
+    var f = [];
+    if (rate && rate > 0) { f.push("<b>" + rate.toFixed(1) + "</b> 段/分"); if (remaining) f.push("预计还需 <b>" + Math.round(remaining / rate) + "</b> 分钟（剩 " + remaining + " 段）"); }
+    else if (remaining) f.push("剩 <b>" + remaining + "</b> 段在译");
+    var stalled = groups.filter(function (g) { return g.state === "stalled"; }).map(function (g) { return g.group; });
+    var ready = groups.filter(function (g) { return g.state === "ready"; }).map(function (g) { return g.group; });
+    if (stalled.length) f.push('<span class="bad">卡住：第 ' + stalled.join("、") + ' 组，超过 ' + (d.stall_sec || 180) + ' 秒没有新段</span>');
+    if (ready.length) f.push('<span class="good">可写回：第 ' + ready.join("、") + ' 组</span>');
+    $("foot").innerHTML = f.join("");
+    $("foot").style.display = f.length ? "" : "none";
+
+    var ev = (d.events || []).slice(-6).reverse();
+    $("events").innerHTML = ev.length ? ev.map(function (e) {
+      return '<div><span class="t mono">' + new Date(e.ts * 1000).toLocaleTimeString() + '</span>' + (e.status === 2 ? "润色写回" : "写回") + ' ' + e.applied + ' 段' + (e.rejected ? '，拒收 ' + e.rejected : '') + '</div>';
+    }).join("") : "尚无写回记录";
+  }
+
+  function offline(msg) { $("meta").textContent = msg; $("note").hidden = false; }
+
+  window.claude.use("db").then(function (db) {
+    if (!db) { offline("这一视图无法连接数据库；用本地 progress --watch / --serve 查看。"); return; }
+    db.doc("progress/current").onSnapshot(function (snap) {
+      if (!snap.exists) { offline("数据库里还没有快照。主控推送第一份后这里会自动出现。"); return; }
+      $("note").hidden = true;
+      render(snap.data());
+    }, function (e) { offline("订阅中断：" + e.code + "。刷新页面重试。"); });
+  });
+})();
+</script>

@@ -1,0 +1,46 @@
+<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ainiee-translate 进度</title>
+<style>
+:root{--bg:#f6f5f2;--fg:#1d1d1b;--mut:#6b6a66;--card:#fff;--line:#e5e3dd;--ok:#2f8f5b;--run:#2b6cb0;--stall:#c53030;--fix:#b7791f;--dim:#a0a09a;--pol:#8b3fa8}
+@media (prefers-color-scheme:dark){:root{--bg:#141414;--fg:#e8e6e1;--mut:#9a988f;--card:#1e1e1e;--line:#2c2c2c}}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"PingFang SC","Noto Sans CJK SC",system-ui,sans-serif;padding:20px}
+h1{font-size:18px;margin:0 0 4px}.sub{color:var(--mut);font-size:12px;margin-bottom:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px}
+.bar{height:10px;background:var(--line);border-radius:5px;overflow:hidden;margin:6px 0 10px}.bar>i{display:block;height:100%;background:var(--ok)}
+.bar.pol>i{background:var(--pol)}.bar.g>i{background:var(--run)}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;border-top:1px solid var(--line);white-space:nowrap}th{color:var(--mut);font-weight:500;font-size:12px}
+td.bar-cell{width:26%}td .bar{margin:0}.st{font-weight:600}.running{color:var(--run)}.stalled{color:var(--stall)}.ready{color:var(--ok)}.needs_fix{color:var(--fix)}.pending,.written{color:var(--dim)}
+.foot{color:var(--mut);font-size:12px}.foot b{color:var(--fg)}.warn{color:var(--stall)}.ev{font-size:12px;color:var(--mut)}
+@media (max-width:640px){body{padding:12px}th:nth-child(2),td:nth-child(2),th:nth-child(6),td:nth-child(6){display:none}}
+</style></head><body>
+<h1 id="title">加载中…</h1><div class="sub" id="sub"></div>
+<div class="card" id="totals"></div>
+<div class="card"><table><thead><tr><th>组</th><th>章节</th><th>进度</th><th>段</th><th>状态</th><th>更新</th><th>✗</th><th>⚠</th><th>词</th></tr></thead><tbody id="rows"></tbody></table><div class="foot" id="foot"></div></div>
+<div class="card ev" id="events"></div>
+<script>
+const ICON={running:"▶",stalled:"⏸",ready:"✓",needs_fix:"✗",pending:"·",written:"■"};
+const age=s=>s==null?"—":s<90?s+"s":Math.floor(s/60)+"m";
+let prev=null;
+function render(d){
+  const t=d.total, pol=d.stage==="polish"||t.polished>0;
+  document.getElementById("title").textContent=d.project+(d.stage==="polish"?"  ·  润色阶段":"");
+  document.getElementById("sub").textContent=new Date(d.ts*1000).toLocaleTimeString()+"  ·  "+d.work;
+  let h=`<div>翻译 <b>${t.done}/${t.workable}</b> (${t.done_pct}%) · 待译 ${t.untranslated}</div><div class="bar"><i style="width:${t.done_pct}%"></i></div>`;
+  if(pol) h+=`<div>润色 <b>${t.polished}/${t.workable}</b> (${t.polished_pct}%) · 待润色 ${t.translated}</div><div class="bar pol"><i style="width:${t.polished_pct}%"></i></div>`;
+  document.getElementById("totals").innerHTML=h;
+  document.getElementById("rows").innerHTML=d.groups.length?d.groups.map(g=>{
+    const lines=Math.min(g.lines,g.src), warn=Object.values(g.warnings||{}).reduce((a,b)=>a+b,0), hard=g.seg_hard+g.dups+g.extra;
+    return `<tr><td>${g.group}</td><td>${(g.chapters||[]).join(" ")||g.first_index+"–"+g.last_index}</td><td class="bar-cell"><div class="bar g"><i style="width:${g.pct}%"></i></div></td><td>${lines}/${g.src}${g.bad_lines?" +"+g.bad_lines+"?":""}</td><td class="st ${g.state}">${ICON[g.state]} ${g.state}</td><td>${age(g.age_sec)}</td><td class="${hard?'warn':''}">${hard}</td><td>${warn}</td><td>${g.newterms||""}</td></tr>`;
+  }).join(""):`<tr><td colspan="9" class="pending">no parallel groups — serial mode</td></tr>`;
+  const inflight=d.groups.filter(g=>g.state!=="written").reduce((a,g)=>a+Math.min(g.lines,g.src),0);
+  const remaining=d.groups.filter(g=>g.state!=="written").reduce((a,g)=>a+g.src-Math.min(g.lines,g.src),0);
+  let rate=null; if(prev&&d.ts>prev.ts){rate=Math.max(0,(inflight-prev.lines)/((d.ts-prev.ts)/60));} prev={ts:d.ts,lines:inflight};
+  const stalled=d.groups.filter(g=>g.state==="stalled").map(g=>g.group), ready=d.groups.filter(g=>g.state==="ready").map(g=>g.group);
+  let f=[]; if(rate!=null&&rate>0){f.push(`<b>${rate.toFixed(1)}</b> 段/分`); if(remaining) f.push(`ETA ~${Math.round(remaining/rate)} 分（剩 ${remaining} 段）`);} else if(remaining) f.push(`剩 ${remaining} 段在译`);
+  if(stalled.length) f.push(`<span class="warn">卡住：grp ${stalled.join(", ")}（>${d.stall_sec}s 没动）</span>`); if(ready.length) f.push(`<b class="ready">可写回：grp ${ready.join(", ")}</b>`);
+  document.getElementById("foot").innerHTML=f.join(" &nbsp;·&nbsp; ");
+  document.getElementById("events").innerHTML=(d.events||[]).slice(-5).reverse().map(e=>`${new Date(e.ts*1000).toLocaleTimeString()} 写回 applied ${e.applied}${e.rejected?", rejected "+e.rejected:""}${e.status===2?"（润色）":""}`).join("<br>")||"尚无写回记录";
+}
+async function tick(){try{const r=await fetch("/snapshot.json",{cache:"no-store"});render(await r.json());}catch(e){document.getElementById("sub").textContent="连接中断："+e;}}
+tick();setInterval(tick,2000);
+</script></body></html>

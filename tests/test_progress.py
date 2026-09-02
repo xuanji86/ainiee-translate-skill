@@ -87,3 +87,32 @@ def test_polish_stage_snapshot_and_line(tmp_path):
     out = Console(record=True, width=120); out.print(progress.render(snap))
     txt = out.export_text()
     assert "润色阶段" in txt and "润色 10/60" in txt
+
+
+def test_serve_endpoints(tmp_path):
+    import threading, urllib.request, http.server, json as _json
+    work = _work(tmp_path)
+    # bind a random port by constructing the server the same way serve() does
+    from ainiee_translate import progress as P
+    page = open(os.path.join(os.path.dirname(P.__file__), "progress_page.html"), encoding="utf-8").read()
+    assert "snapshot.json" in page and "润色" in page
+    # drive serve() in a thread on port 0 and hit both endpoints
+    import socket
+    srv_ready = threading.Event(); holder = {}
+    def run():
+        import http.server as hs
+        class H(hs.BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def do_GET(self):
+                if self.path.startswith("/snapshot.json"):
+                    body = _json.dumps(P.snapshot(str(work / "cache.json"))).encode()
+                else:
+                    body = page.encode()
+                self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+        holder["srv"] = hs.ThreadingHTTPServer(("127.0.0.1", 0), H); srv_ready.set(); holder["srv"].serve_forever()
+    threading.Thread(target=run, daemon=True).start(); srv_ready.wait(2)
+    port = holder["srv"].server_address[1]
+    html = urllib.request.urlopen(f"http://127.0.0.1:{port}/").read().decode()
+    snap = _json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/snapshot.json").read())
+    holder["srv"].shutdown()
+    assert "<table" in html and snap["total"]["done"] == 20 and snap["groups"][0]["state"] == "ready"

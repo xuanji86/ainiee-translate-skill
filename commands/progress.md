@@ -17,3 +17,5 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" -m ainiee_translate.progress ~/<项
 ```
 
 它每 2 秒刷新，并把一行摘要写到 `~/.ainiee-translate/progress.line`，statusline 会自动显示（见 SKILL.md 附录 D）。
+
+Claude Code Desktop 或没有分屏：`--serve 8765 --open` 起本地网页看板；手机/分享用 Artifact 看板（附录 D）。

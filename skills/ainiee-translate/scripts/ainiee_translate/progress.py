@@ -22,6 +22,9 @@ Per-group state machine:
     progress work/cache.json --line           one line for a status bar (also written to
                                               ~/.ainiee-translate/progress.line)
     progress work/cache.json --json           full snapshot
+    progress work/cache.json --serve 8765     local web page (stdlib http.server), polls the
+                                              snapshot every 2 s — for Claude Code Desktop /
+                                              any browser; --open launches it
 """
 import argparse
 import glob
@@ -303,6 +306,51 @@ def render(snap: dict, rate: float | None = None):
                  subtitle=time.strftime("%H:%M:%S", time.localtime(snap["ts"])))
 
 
+# ---------------------------------------------------------------- serve ----
+def serve(cache_path: str, par_dir: str | None, stall_sec: int, port: int, open_browser: bool = False):
+    """Serve the dashboard on localhost: `/` = page, `/snapshot.json` = live data."""
+    import http.server
+    import webbrowser
+    page = (os.path.join(os.path.dirname(__file__), "progress_page.html"))
+    with open(page, encoding="utf-8") as f:
+        html = f.read().encode("utf-8")
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):          # quiet
+            pass
+
+        def do_GET(self):
+            if self.path.startswith("/snapshot.json"):
+                try:
+                    snap = snapshot(cache_path, par_dir, stall_sec)
+                    write_line_file(one_line(snap))
+                    body = json.dumps(snap, ensure_ascii=False).encode("utf-8")
+                    ctype = "application/json; charset=utf-8"
+                except Exception as e:      # keep serving; the page shows the error
+                    body = json.dumps({"error": str(e)}).encode("utf-8")
+                    ctype = "application/json; charset=utf-8"
+            else:
+                body, ctype = html, "text/html; charset=utf-8"
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), H)
+    url = f"http://127.0.0.1:{srv.server_address[1]}/"
+    print(f"progress dashboard: {url}  (Ctrl-C to stop)", flush=True)
+    if open_browser:
+        webbrowser.open(url)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.server_close()
+
+
 # ------------------------------------------------------------------ CLI ----
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Live translation progress (multi-agent aware)")
@@ -314,8 +362,16 @@ def main(argv=None):
     mode.add_argument("--once", action="store_true", help="render the panel once")
     mode.add_argument("--line", action="store_true", help="one status-bar line (also written to ~/.ainiee-translate/progress.line)")
     mode.add_argument("--json", action="store_true", help="full snapshot as JSON")
+    mode.add_argument("--serve", type=int, nargs="?", const=8765, metavar="PORT",
+                      help="serve a local web dashboard (default port 8765; 0 = random)")
+    ap.add_argument("--open", action="store_true", help="with --serve: open the page in the default browser")
+    ap.add_argument("--out", help="with --json: write the snapshot to this file (for pushing to a dashboard) instead of stdout")
     ap.add_argument("--interval", type=float, default=2.0)
     a = ap.parse_args(argv)
+
+    if a.serve is not None:
+        serve(a.cache, a.par, a.stall, a.serve, a.open)
+        return 0
 
     if a.watch:
         from rich.console import Console
@@ -335,7 +391,12 @@ def main(argv=None):
     rate = rate_per_min(prev, snap) if prev and prev.get("work") == snap["work"] else None
     _save_state(snap)
     if a.json:
-        print(json.dumps(snap, ensure_ascii=False, indent=1))
+        if a.out:
+            with open(a.out, "w", encoding="utf-8") as f:
+                json.dump(snap, f, ensure_ascii=False, indent=1)
+            print(f"snapshot -> {a.out}")
+        else:
+            print(json.dumps(snap, ensure_ascii=False, indent=1))
     elif a.line:
         line = one_line(snap, rate)
         write_line_file(line)
