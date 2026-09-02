@@ -105,11 +105,17 @@ def lint_locked(locked: dict) -> list[dict]:
         canon = c.get("canonical") or c.get("render") or ""
         if not (c.get("render") or "").strip():
             issues.append({"kind": "character_missing_render", "character": canon})
-        for n in [c.get("canonical"), c.get("render")] + list(c.get("aliases") or []):
+        canon_toks = normalize_apostrophes(canon).lower().split()
+        render = c.get("render") or ""
+        # A render that is just the tail of the canonical ("Williams" for "Valeria Williams")
+        # is how the book refers to the person, not a competing name — two people sharing a
+        # surname may legitimately both render as it (shared_surname already flags them).
+        render_is_surname = (normalize_apostrophes(render).lower().split() == canon_toks[-len(render.split()):]
+                             if render.split() else False)
+        for n in [c.get("canonical")] + ([] if render_is_surname else [render]) + list(c.get("aliases") or []):
             if not n:
                 continue
             toks = normalize_apostrophes(n).split()
-            canon_toks = normalize_apostrophes(canon).lower().split()
             lead = toks[0].lower() if toks else ""
             titled = (len(toks) >= 2 and [t.lower() for t in toks[1:]] == canon_toks
                       and (lead in term_srcs or len(lead_count.get(lead, ())) >= 2))
