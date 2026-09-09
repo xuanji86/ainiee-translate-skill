@@ -103,7 +103,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 ```
 
 或对 agent 说「用 agent 翻译这本 epub」。它会走完 解析 → 词汇表 → 逐章翻译 → 导出 → 校验，
-并在开始前与你确认**介入模式**：
+并在开始前与你确认**介入模式**。译完想再抓一轮 AI 味和误译：`/ainiee-translate:review 1-<总段数>`（见[质量闭环](#质量闭环)）。
 
 | 模式 | 行为 | 适用 |
 |---|---|---|
@@ -116,18 +116,19 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 ## 工作原理
 
 ```
-       ┌─────────┐   ┌──────────┐   ┌───────────┐   ┌────────┐   ┌────────┐
-书 ──▶ │  parse  │──▶│ glossary │──▶│  translate│──▶│ polish │──▶│ export │──▶ 成品
-       └─────────┘   └──────────┘   └───────────┘   └────────┘   └────────┘
-            │             │            ▲     │                        ▲
-       cache.json    锁定词汇表    batch read  batch write        original_html
-       (含原书 HTML)   (人工复核)      │     │                    (结构/标签还原)
+       ┌─────────┐   ┌──────────┐   ┌───────────┐   ┌────────┐   ┌────────┐   ┌────────┐
+书 ──▶ │  parse  │──▶│ glossary │──▶│  translate│──▶│ polish │──▶│ review │──▶│ export │──▶ 成品
+       └─────────┘   └──────────┘   └───────────┘   └────────┘   └────────┘   └────────┘
+            │             │            ▲     │            Reviewer→闸门→Challenger    ▲
+       cache.json    锁定词汇表    batch read  batch write   A/B 自动写回、C/D 过目   original_html
+       (含原书 HTML)   (人工复核)      │     │                                  (结构/标签还原)
                                       └──┬──┘
                                     agent = 翻译引擎
                                   (规则 + 词汇表 + 提示词)
                                          │
                               ┌──────────┴──────────┐
                               │  verify  ·  scan    │  质量闭环
+                              │  audit   ·  review  │
                               └─────────────────────┘
 ```
 
@@ -306,6 +307,23 @@ CJK 相关检查只对含 CJK 的译文生效。`glossary lint` 则查表本身�
 
 **推荐闭环**：`verify` 清表内硬伤 → `audit` 机械体检 → `glossary lint` 查表 → `scan --mode all` 发现表外问题 →
 **把确认的真名补进词汇表** → 再 `verify`（这下表全了，能守住）。
+
+### `review` —— 对抗性审核（模型层的第二道工序）
+
+上面四件都是机械检查，抓不到「中文没错但味道不对」和「词汇表之外的误译」。`review` 把**找问题**和**否决问题**拆给两个
+互不通气的 Opus 实例：
+
+| 角色 | 激励 | 产出 |
+|---|---|---|
+| Reviewer（每组一个） | 奖励召回：宁可多报，每条引用源文证据，只报子串级替换 | `findings_X.jsonl`（A 误译 / B 硬伤 / C 翻译腔 / D 不一致，含严重度） |
+| Challenger（另一实例） | 奖励否决：原译没错 / 违反红线 / 引入新错 / 纯偏好 → reject，可 amend | `verdicts_X.jsonl` |
+| Consistency auditor | 只读 `review inventory` 生成的术语清单，判同一英文词该不该一个译法 | `findings_D.jsonl` |
+
+主控只跑机械闸门：`review pre`（`offending` 在现译中恰好一次、红线**改动即拒**、定稿术语只加不删、`<i>/<b>` 成对、不动拉丁 token）
+→ `review final`（合并 verdicts：A/B 进 `apply_X.json` → `polish write`；C/D 进 `review_ALL.md` 给人勾选 → `review pick`）。
+先在人工校对过的章节上 `review benchmark` + `score` 打分再铺全书（Warpath 试点：召回 71–75%、Challenger 精度 87–91%，
+且报出而人工没改的段抽查多数是人工漏掉的真问题）。协议、`config.json` 红线格式、prompt 模板见
+`skills/ainiee-translate/references/adversarial_review.md` / `review_taxonomy.md` / `review_prompts.md`；斜杠命令 `/ainiee-translate:review <起-止段号>`。
 
 ### `repair` —— 存量项目的行内标记修复
 
