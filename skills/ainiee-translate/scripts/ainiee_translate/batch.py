@@ -3,7 +3,9 @@
   read / read-translated   next batch for the agent (translate / polish)
   split                    chapter-aligned, size-balanced groups for parallel agents
                            (+ per-group source files and preceding-context files);
-                           --stage polish cuts TRANSLATED segments for a parallel polish pass
+                           --stage polish cuts TRANSLATED segments for a parallel polish pass;
+                           --stage review cuts TRANSLATED+POLISHED segments (optionally --range A-B,
+                           --prefix g) for an adversarial review pass (see review.py)
   validate                 check one group's output against its source BEFORE writing
   write                    gate + write one or many translation files (JSON or JSONL)
                            in a single lock/backup/load/save
@@ -121,15 +123,19 @@ def chapters(project) -> list[tuple]:
     return runs
 
 
-def _pending(items, status):
-    return [it for it in items if it.translation_status == status and (it.source_text or "").strip()]
+def _pending(items, status, keep=None):
+    """Items at `status` (an int or a tuple of ints) with source text; `keep(item)` narrows further."""
+    ok = (lambda st: st in status) if isinstance(status, (tuple, set, frozenset)) else (lambda st: st == status)
+    return [it for it in items if ok(it.translation_status) and (it.source_text or "").strip()
+            and (keep is None or keep(it))]
 
 
-def plan_groups(project, target: int = 300, status: int = TranslationStatus.UNTRANSLATED) -> list[dict]:
+def plan_groups(project, target: int = 300, status=TranslationStatus.UNTRANSLATED, keep=None) -> list[dict]:
     """Greedy: accumulate whole chapters until >= target; a chapter larger than
     1.5×target is chunked on its own; a tail under 0.4×target folds into the
-    previous group. Returns [{"chapters": [keys], "items": [CacheItem]}]."""
-    chs = [(k, _pending(items, status)) for k, items in chapters(project)]
+    previous group. `status` may be one int or a tuple; `keep(item)` narrows the
+    selection (e.g. a text_index range). Returns [{"chapters": [keys], "items": [CacheItem]}]."""
+    chs = [(k, _pending(items, status, keep)) for k, items in chapters(project)]
     chs = [(k, td) for k, td in chs if td]
     groups: list[dict] = []
     cur = {"chapters": [], "items": []}
@@ -162,28 +168,44 @@ def plan_groups(project, target: int = 300, status: int = TranslationStatus.UNTR
     return groups
 
 
-STAGE_STATUS = {"translate": TranslationStatus.UNTRANSLATED, "polish": TranslationStatus.TRANSLATED}
+STAGE_STATUS = {"translate": TranslationStatus.UNTRANSLATED, "polish": TranslationStatus.TRANSLATED,
+                "review": (TranslationStatus.TRANSLATED, TranslationStatus.POLISHED)}
 
 
-def split_project(project, target: int, out_dir: str | None, context: int, stage: str = "translate") -> dict:
-    groups = plan_groups(project, target, STAGE_STATUS[stage])
+def parse_range(s: str | None) -> tuple[int, int] | None:
+    """'438-719' -> (438, 719); None/'' -> None."""
+    if not s:
+        return None
+    a, b = s.split("-", 1)
+    lo, hi = int(a), int(b)
+    if lo > hi:
+        raise ValueError(f"bad range {s!r}")
+    return lo, hi
+
+
+def split_project(project, target: int, out_dir: str | None, context: int, stage: str = "translate",
+                  index_range: tuple[int, int] | None = None, prefix: str = "") -> dict:
+    keep = (lambda it: index_range[0] <= it.text_index <= index_range[1]) if index_range else None
+    groups = plan_groups(project, target, STAGE_STATUS[stage], keep)
     all_items = list(cache_io.iter_items(project))
     pos = {it.text_index: i for i, it in enumerate(all_items)}
     rows = []
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
         with open(os.path.join(out_dir, "_stage.json"), "w", encoding="utf-8") as f:
-            json.dump({"stage": stage, "target": target, "context": context, "groups": len(groups)}, f)
+            json.dump({"stage": stage, "target": target, "context": context, "groups": len(groups),
+                       "prefix": prefix, "range": list(index_range) if index_range else None}, f)
     for n, g in enumerate(groups, 1):
         items = g["items"]
-        row = {"group": n, "count": len(items),
+        gid = f"{prefix}{n}"
+        row = {"group": gid if prefix else n, "count": len(items),
                "first_index": items[0].text_index, "last_index": items[-1].text_index,
                "chapters": [str(c) for c in g["chapters"] if c is not None]}
         if out_dir:
-            src_path = os.path.join(out_dir, f"grp_{n}_src.json")
+            src_path = os.path.join(out_dir, f"grp_{gid}_src.json")
             with open(src_path, "w", encoding="utf-8") as f:
                 rows_out = [{"text_index": it.text_index, "source_text": it.source_text} for it in items]
-                if stage == "polish":                       # the polisher needs the current translation too
+                if stage in ("polish", "review"):           # the polisher/reviewer needs the current translation too
                     for r, it in zip(rows_out, items):
                         r["translated_text"] = it.translated_text or ""
                 json.dump(rows_out, f, ensure_ascii=False, indent=1)
@@ -196,7 +218,7 @@ def split_project(project, target: int, out_dir: str | None, context: int, stage
                 # sits right behind another pending group, reach back past it.
                 translated = [it for it in prev if (it.translated_text or "").strip()]
                 ctx = (translated if translated else prev)[-context:]
-                ctx_path = os.path.join(out_dir, f"grp_{n}_ctx.json")
+                ctx_path = os.path.join(out_dir, f"grp_{gid}_ctx.json")
                 with open(ctx_path, "w", encoding="utf-8") as f:
                     json.dump([{"text_index": it.text_index, "source_text": it.source_text,
                                 "translated_text": it.translated_text or "",
@@ -261,8 +283,11 @@ def main(argv=None):
     sp.add_argument("--out-dir", help="also write grp_N_src.json (+ grp_N_ctx.json) here")
     sp.add_argument("--context", type=int, default=20,
                     help="preceding segments to put in grp_N_ctx.json (0 = none)")
-    sp.add_argument("--stage", choices=["translate", "polish"], default="translate",
-                    help="translate: pending segments (default); polish: TRANSLATED segments, src rows carry translated_text")
+    sp.add_argument("--stage", choices=["translate", "polish", "review"], default="translate",
+                    help="translate: pending segments (default); polish: TRANSLATED segments, src rows carry "
+                         "translated_text; review: TRANSLATED+POLISHED segments for an adversarial review pass")
+    sp.add_argument("--range", metavar="A-B", help="only text_index A..B (review/polish of a slice of the book)")
+    sp.add_argument("--prefix", default="", help="group id prefix: grp_<prefix><n>_src.json (e.g. g, b)")
 
     v = sub.add_parser("validate", help="Check a group's translation file against its source file")
     v.add_argument("src_json")
@@ -286,7 +311,12 @@ def main(argv=None):
         print(json.dumps(read_translated_batch(project, size=a.size), ensure_ascii=False))
     elif a.cmd == "split":
         project = cache_io.load_cache(a.cache_path)
-        print(json.dumps(split_project(project, a.target, a.out_dir, a.context, a.stage), ensure_ascii=False, indent=1))
+        try:
+            rng = parse_range(a.range)
+        except ValueError as e:
+            ap.error(str(e))
+        print(json.dumps(split_project(project, a.target, a.out_dir, a.context, a.stage, rng, a.prefix),
+                         ensure_ascii=False, indent=1))
     elif a.cmd == "validate":
         try:
             src = load_translations(a.src_json)

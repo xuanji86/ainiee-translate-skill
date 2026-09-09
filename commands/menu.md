@@ -15,6 +15,7 @@ disable-model-invocation: true
 - `/ainiee-translate:scan [模式]` —— 发现词汇表缺口与幻觉错名
 - `/ainiee-translate:status` —— 查看进度（已绑模块 / 计数 / 续跑点）
 - `/ainiee-translate:progress` —— 进度面板（全书 + 每个并行组 running/stalled/ready/written）
+- `/ainiee-translate:review <起-止段号>` —— 对抗性审核（Reviewer→闸门→Challenger；A/B 自动写回、C/D 过目；去 AI 味 + 抓误译）
 
 **模块（不同任务的设置包）**
 - `/ainiee-translate:import-profile <profile.json> <模块名>` —— 导入 AiNiee profile 为模块

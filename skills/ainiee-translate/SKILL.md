@@ -383,6 +383,28 @@ verify 是**词汇表执行器**，不是**发现器**。它只能发现「锁�
 
 > 经验：写自查脚本做名字比对时，先归一化撇号（弯/直撇号 `'`/`'` 统一），否则 `Mak'ala`、`Quark's`、`O'Brien` 会因撇号不同被误判为「消失」。verify/scan 内部已统一处理。
 
+## 步骤 7.5：对抗性审核（可选，去 AI 味 + 抓润色漏掉的误译）
+
+润色只改表达，且同一个模型自审漏得多（Warpath 实测：Sonnet 润色后人工逐句校 4 章仍抓出 ~80 段，几乎全是词法/搭配层与真误译）。
+本步把**找问题**（Reviewer，奖励召回）和**否决问题**（Challenger，奖励精度）拆给两个互不通气的 Opus 实例，另加一个只读术语清单的
+Consistency auditor；主控只跑机械闸门：`review pre`（`offending` 恰好一次、红线改动即拒、定稿术语只加不删、`<i>/<b>` 成对、
+不动拉丁 token）→ `review final`（合并 verdicts：A 误译/B 硬伤自动进 `apply_X.json` → `polish write`；C 翻译腔/D 不一致进 `review_ALL.md`
+给用户勾选 → `review pick`）。分类标准与十二条 AI 味清单在 `references/review_taxonomy.md`，三份 prompt 在 `references/review_prompts.md`，
+协议、`config.json` 红线格式、先在人工校过的章节上做基准打分（`review benchmark/score`，判定门召回 ≥60% 且精度 ≥80%）见
+[`references/adversarial_review.md`](references/adversarial_review.md)。斜杠命令 `/ainiee-translate:review <起-止段号>`。
+
+```bash
+<PFX> -m ainiee_translate.batch split "$WORK/work/cache.json" --stage review --range 438-719 --target 140 --prefix g --out-dir "$WORK/work/review/groups" --context 3
+# … Reviewer ×N（Opus）→ findings_gN.jsonl …
+<PFX> -m ainiee_translate.review pre  "$WORK/work/cache.json" "$WORK/work/review"/findings_g*.jsonl
+<PFX> -m ainiee_translate.review segs "$WORK/work/cache.json" "$WORK/work/review"/findings_g*.pre.jsonl
+<PFX> -m ainiee_translate.review inventory "$WORK/work/cache.json" --range 438-719
+# … Challenger ×N + Consistency ×1 → verdicts_gN.jsonl / findings_D.jsonl …
+<PFX> -m ainiee_translate.review final "$WORK/work/cache.json" g1 g2 D
+<PFX> -m ainiee_translate.polish write "$WORK/work/cache.json" "$WORK/work/review"/apply_g*.json
+<PFX> -m ainiee_translate.review merge "$WORK/work/cache.json" g1 g2 D        # → review_ALL.md 给用户
+```
+
 ---
 
 ## 附录 A：命令速查
@@ -441,6 +463,10 @@ $PFX -m ainiee_translate.batch split "$WORK/work/cache.json" --target 300 --out-
 $PFX -m ainiee_translate.glossary filter --locked "$WORK/work/glossary.locked.json" --for "$WORK/work/par/grp_1_src.json" --out "$WORK/work/par/g_1.json"
 $PFX -m ainiee_translate.batch validate "$WORK/work/par/grp_1_src.json" "$WORK/work/par/trans_1.jsonl"
 $PFX -m ainiee_translate.batch write "$WORK/work/cache.json" "$WORK/work/par"/trans_*.jsonl
+
+# 对抗性审核：切组 / 闸门 / 抽段 / 术语清单 / 合并 verdicts / 过目表 / 勾选 / 基准打分 / 留痕（详见 references/adversarial_review.md）
+$PFX -m ainiee_translate.batch split "$WORK/work/cache.json" --stage review --range 438-719 --prefix g --out-dir "$WORK/work/review/groups" --context 3
+$PFX -m ainiee_translate.review pre|segs|final|merge|pick|inventory|benchmark|score|log "$WORK/work/cache.json" …
 ```
 
 ---
@@ -485,6 +511,7 @@ A: verify 只执行**锁定表里登记过的**人名，且无法识别张冠李
 | `scan [discover\|terms\|strays\|merges\|all]` | 补 verify 盲区：表外被音译/丢失的专名(`discover`)、被漏译成英文的术语(`terms`)、幻觉插入的错名(`strays`)、粘连词(`merges`)|
 | `audit [--allow-tag-mismatch]` | 机械体检：空译/标记不匹配（硬伤）+ 半角标点/「」/长度比等风格警告 |
 | `progress [--line\|--json]` | 进度面板：全书进度 + 每个并行组的 running/stalled/ready/needs_fix/written |
+| `review <起-止段号> [--target 140]` | 对抗性审核：Reviewer 找问题 → 机械闸门 → Challenger 否决 → A/B 自动写回、C/D 给用户过目（去 AI 味 + 抓误译）|
 
 命令脚本路径用 `${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts`，并需用户设好 `AINIEE_PY`（`AINIEE_REPO` 仅 PDF/Office 回退才需要）。
 

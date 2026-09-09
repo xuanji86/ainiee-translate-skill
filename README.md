@@ -5,7 +5,7 @@
 **Agent 原生的长篇翻译管线** —— 让编码 agent 本身当翻译引擎，端到端译完一本书。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.9.0-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
+[![Version](https://img.shields.io/badge/version-1.10.0-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue.svg)](pyproject.toml)
 [![Tests](https://img.shields.io/badge/tests-90%20passing-brightgreen.svg)](tests/)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://claude.com/claude-code)
@@ -145,6 +145,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 - **模块化** —— 整套任务设置（提示词、词汇表、禁翻表、风格、语言对）打包成可复用模块，一个插件应对不同书；支持从 AiNiee profile 一键导入。
 - **多 agent 并行** —— 风格锁定后可派多个 subagent 并发翻不同章节（实测 11 章 1704 段 / 7 agent / ~9 分钟）。编排全是命令：`batch split` 按章节边界分组并附前文上下文，`glossary filter` 给每组一份瘦身词汇表（66 KB → ~5 KB），subagent 边译边写 JSONL，`batch validate` 逐组验收，`batch write` 一次写回全部。铁律：subagent 只产出译文文件，**由主控写回**。
 - **润色 pass** —— 可选二次加工，状态 `TRANSLATED → POLISHED`，导出自动采用润色文本。
+- **对抗性审核** —— 润色之后的第二道工序：Reviewer（奖励召回）与 Challenger（奖励否决）是互不通气的两个 Opus 实例，主控只跑机械闸门（子串级替换、红线改动即拒、定稿术语只加不删、标记/拉丁 token 不变）；A 误译/B 硬伤自动写回，C 翻译腔/D 不一致列表给人过目。Warpath 试点：召回 71–75%、精度 87–91%，抓到人工校对漏掉的真误译。
 
 ---
 
@@ -152,7 +153,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 
 两层：**斜杠命令**（插件内用）和其底层 **Python CLI**（Codex / 手动 / 调试）。
 
-### 斜杠命令（17 个）
+### 斜杠命令（18 个）
 
 **翻译流程**
 
@@ -174,6 +175,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 | `/ainiee-translate:repair` | — | 修复存量 epub 项目的行内标记与空格 |
 | `/ainiee-translate:audit` | `[--allow-tag-mismatch]` | 机械体检：空译/标记不匹配 + 半角标点/「」/长度比等 |
 | `/ainiee-translate:progress` | `[--line\|--json]` | 进度面板：全书 + 每个并行组的状态/速率/卡死 |
+| `/ainiee-translate:review` | `<起-止段号> [--target 140]` | 对抗性审核：Reviewer→闸门→Challenger，A/B 自动写回、C/D 过目（去 AI 味 + 抓误译）|
 
 **模块与提示词**
 
@@ -194,7 +196,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 |---|---|
 | `parse` | `--input <书> --type AutoType --out <cache.json>` |
 | `glossary` | `build --config <config.json> [--analysis <路径>] --out <locked.json>` · `filter --locked L --for grp_N_src.json --out g_N.json` · `lint --locked L` · `merge-newterms --locked L newterms_*.txt --apply` |
-| `batch` | `read <cache> --size N` · `read-translated <cache> --size N` · `split <cache> --target 300 --out-dir D --context 20 [--stage polish]` · `validate <src.json> <trans.jsonl>` · `write <cache> <译文.json|.jsonl>… [--force] [--allow-tag-mismatch]` |
+| `batch` | `read <cache> --size N` · `read-translated <cache> --size N` · `split <cache> --target 300 --out-dir D --context 20 [--stage polish\|review] [--range A-B] [--prefix g]` · `validate <src.json> <trans.jsonl>` · `write <cache> <译文.json|.jsonl>… [--force] [--allow-tag-mismatch]` |
 | `polish` | `write <cache> <润色.json|.jsonl>… [--force] [--allow-tag-mismatch]` |
 | `prompt` | `--config <config> [--out F] [--translate-system\|--polish]` |
 | `module` | `list` · `show <名>` · `create <名> [--source-language X --target-language Y]` · `load <名> [--work D]` |
@@ -207,6 +209,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 | `audit` | `<cache> [--out audit.json] [--allow-tag-mismatch]` |
 | `progress` | `<cache> [--watch\|--once\|--line\|--json [--out F]\|--serve PORT [--open]]`（多 agent 进度面板 / statusline 一行 / 本地网页看板；润色阶段双进度条）|
 | `precedents` | `<cache> --for grp_*_src.json [--locked L] --out BOOK_BIBLE.md`（续翻时从已译段抽专名先例）|
+| `review` | `pre <cache> findings_X.jsonl…` · `segs <cache> findings_X.pre.jsonl…` · `inventory <cache> --range A-B` · `final <cache> X…` · `merge <cache> X…` · `pick <cache> X… --ids …` · `benchmark <cache> --baseline BAK --range A-B` · `score <cache> X…` · `log <cache> --stage … --file …`（对抗性审核的机械半边；见 `references/adversarial_review.md`）|
 
 ---
 
@@ -277,7 +280,7 @@ examples.json        # few-shot 示例（可选）
 
 ## 质量闭环
 
-翻完不等于译对。本管线提供四件工具，**分工明确**：
+翻完不等于译对。本管线提供四件机械工具，**分工明确**，外加一道模型对抗的审核工序（`review`，见 `references/adversarial_review.md`）：
 
 ### `verify` —— 词汇表执行器
 
