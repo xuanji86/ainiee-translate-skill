@@ -10,7 +10,11 @@ main agent runs between them so that no finding reaches cache.json un-gated:
   hints      validate the Blind Reader's flags_X.jsonl -> hints_X.json (flagged segments + source)
              for the Reviewer; bad quotes -> rejected_flags_X.jsonl
   pre        mechanical gate on Reviewer findings -> findings_X.pre.jsonl / rejected_X.jsonl
-  segs       the segments a Challenger needs (only those with findings) -> segs_X.json
+  segs       the findings a Challenger must judge -> challenge_X.jsonl + their segments -> segs_X.json;
+             --tier auto-accepts Blind-flag-corroborated findings (verdicts_X.auto.jsonl)
+  rules      per-group slice of glossary + rulings bullets -> rules_X.json (agents read this, not
+             the whole EXAMPLES.md)
+  stats      per-stage yield -> stats.md (is each stage / tier worth its tokens?)
   final      merge Challenger verdicts -> apply_X.json (A/B, ready for `polish write`)
              + review_X.md (C/D and human-only A) + rejected_X.jsonl
   merge      every group's leftover C/D into one review_ALL.md sorted by severity
@@ -22,7 +26,9 @@ Layout (default DIR = <cache dir>/review): groups/grp_X_src.json from
 verdicts_X.jsonl from Challengers, config.json with the project's rules:
 
   {"redline": [regex…],     # protected renderings: multiset in offending == proposed
-                            # ("change forbidden, mention allowed")
+                            # ("change forbidden, mention allowed"); an entry may be
+                            # {"re": regex, "waivable": true}: a finding with "redline_waiver"
+                            # may change it and is always challenged
    "settled": [regex…],     # settled renderings: may be added, never removed
    "glossary_settled": true,# also treat every glossary `dst` as settled (default)
    "forbid": "[「」\\"]",    # characters proposed text must never introduce
@@ -42,6 +48,7 @@ or pad content.
 import argparse
 import collections
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -113,8 +120,13 @@ class Paths:
 # --------------------------------------------------------------- rules ----
 class Rules:
     def __init__(self, cfg: dict, glossary_dst: list[str] = ()):
-        red = list(cfg.get("redline", []))
+        red = [r if isinstance(r, str) else r["re"] for r in cfg.get("redline", [])]
         self.redline = re.compile("|".join(red)) if red else NEVER
+        # redline entries given as {"re": …, "waivable": true} may be changed by a finding that
+        # carries "redline_waiver": "<why>" (e.g. a rank the source contradicts); such a finding
+        # is always sent to the Challenger and never auto-accepted.
+        self.redline_hard = [re.compile(r if isinstance(r, str) else r["re"]) for r in cfg.get("redline", [])
+                             if isinstance(r, str) or not r.get("waivable")]
         settled = list(cfg.get("settled", []))
         if cfg.get("glossary_settled", True):
             settled += [re.escape(t) for t in sorted(set(glossary_dst), key=len, reverse=True)]
@@ -126,11 +138,13 @@ class Rules:
         self.norm = [(re.compile(p), r) for p, r in cfg.get("norm", [])]
         self.leak_files = list(cfg.get("leak_files", DEFAULT_LEAK_FILES))
 
-    def violation(self, off: str, prop: str) -> str:
+    def violation(self, off: str, prop: str, waiver: bool = False) -> str:
         if self.forbid.search(prop):
             return "forbid_char"
         if collections.Counter(self.redline.findall(off)) != collections.Counter(self.redline.findall(prop)):
-            return "E_redline"
+            if not waiver or any(collections.Counter(rx.findall(off)) != collections.Counter(rx.findall(prop))
+                                 for rx in self.redline_hard):
+                return "E_redline"
         if set(self.settled.findall(off)) - set(self.settled.findall(prop)):
             return "E_settled_removed"
         return ""
@@ -177,7 +191,7 @@ def check(f: dict, seg: dict | None, rules: Rules) -> tuple[bool, str, str | Non
     n = old.count(off)
     if n != 1:
         return False, f"ambiguous({n})", None
-    why = rules.violation(off, prop)
+    why = rules.violation(off, prop, waiver=bool(f.get("redline_waiver")))
     if why:
         return False, why, None
     h_off, h_prop = len(HAN.findall(off)), len(HAN.findall(prop))
@@ -209,6 +223,8 @@ def pre(paths: Paths, rules: Rules, files: list[str]) -> list[dict]:
             ok, why, new = check(f, seg, rules)
             if ok:
                 f["_new_text"] = new
+                if f.get("redline_waiver"):
+                    f["_force_challenge"] = True
                 if f.get("latin_change") and f["category"] == "A":
                     f["_human"] = True
                 ok_rows.append(f)
@@ -226,16 +242,49 @@ def pre(paths: Paths, rules: Rules, files: list[str]) -> list[dict]:
     return out
 
 
-def segs_for(paths: Paths, files: list[str]) -> None:
+def needs_challenge(f: dict, min_sev: int = 3, sample: float = 0.0) -> str:
+    """Tiering rule -> why this finding goes to the Challenger ('' = auto-accept).
+    Destiny (7357 gated findings): of 5034 findings backed by a Blind Reader flag the Challenger
+    rejected 5 (0.1%); of 2323 without one it rejected 152 (6.5%, mostly C/severity-1 and A/severity-1
+    'preferences'). So a flag is independent corroboration and only the uncorroborated rest needs a veto."""
+    if f.get("_force_challenge") or f.get("redline_waiver"):
+        return "waiver"
+    if f.get("latin_change"):
+        return "latin"
+    if not f.get("flags"):
+        return "unflagged"
+    if int(f.get("severity") or 0) >= min_sev:
+        return "severity"
+    if sample and int(hashlib.md5(str(f["id"]).encode()).hexdigest(), 16) % 10000 < sample * 10000:
+        return "sample"
+    return ""
+
+
+def segs_for(paths: Paths, files: list[str], tier: bool = False, min_sev: int = 3, sample: float = 0.0) -> None:
+    """-> challenge_X.jsonl (findings the Challenger must judge) + segs_X.json (their segments).
+    With --tier, flag-corroborated findings below `min_sev` are accepted without a Challenger
+    (verdicts_X.auto.jsonl), except a deterministic `sample` fraction kept as a spot check."""
     for p in files:
         g = group_of(p)
         segs = paths.group_src(g)
-        idx = sorted({int(f["text_index"]) for f in read_jsonl(p)})
+        fs = read_jsonl(p)
+        why = {f["id"]: (needs_challenge(f, min_sev, sample) if tier else "all") for f in fs}
+        chal = [f for f in fs if why[f["id"]]]
+        auto = [{"id": f["id"], "verdict": "accept", "reason": "auto: corroborated by Blind Reader flag"}
+                for f in fs if not why[f["id"]]]
+        write_jsonl(paths.f(f"challenge_{g}.jsonl"), [{k: v for k, v in f.items() if k != "_new_text"} for f in chal])
+        ap = paths.f(f"verdicts_{g}.auto.jsonl")
+        if auto:
+            write_jsonl(ap, auto)
+        elif os.path.exists(ap):
+            os.remove(ap)
+        idx = sorted({int(f["text_index"]) for f in chal})
         rows = [{"text_index": i, "source_text": segs[i]["source_text"], "translated_text": segs[i]["translated_text"]}
                 for i in idx if i in segs]
         op = paths.f(f"segs_{g}.json")
         write_json(op, rows)
-        print(f"[{g}] segs={len(rows)} -> {op}")
+        mix = collections.Counter(why[f["id"]] for f in chal)
+        print(f"[{g}] challenge={len(chal)} auto={len(auto)} segs={len(rows)} {dict(mix)} -> {op}")
 
 
 def blind(paths: Paths, groups: list[str]) -> None:
@@ -320,8 +369,13 @@ def final(paths: Paths, rules: Rules, groups: list[str]) -> list[dict]:
             print(f"[{g}] no {os.path.basename(fp)}, skip (run `pre` first)")
             continue
         findings = {f["id"]: f for f in read_jsonl(fp)}
-        if os.path.exists(vp):
-            verdicts = {v["id"]: v for v in read_jsonl(vp)}
+        autop = paths.f(f"verdicts_{g}.auto.jsonl")
+        if os.path.exists(vp) or os.path.exists(autop):
+            verdicts = {v["id"]: v for v in read_jsonl(autop)} if os.path.exists(autop) else {}
+            if os.path.exists(vp):
+                verdicts.update({v["id"]: v for v in read_jsonl(vp)})   # a real verdict overrides an auto one
+            else:
+                print(f"[{g}] WARNING: no {os.path.basename(vp)}; challenged findings count as no_verdict")
         else:   # a group without a Challenger (e.g. the consistency auditor): everything goes to the human list
             verdicts = {fid: {"verdict": "accept", "reason": "no challenger"} for fid in findings}
         segs = paths.group_src(g)
@@ -359,6 +413,101 @@ def final(paths: Paths, rules: Rules, groups: list[str]) -> list[dict]:
         out.append(row)
         print(f"[{g}] apply(A/B)={row['apply_segments']} segs  review(C/D/human)={row['review']}  rejected={row['rejected']}")
     return out
+
+
+# --------------------------------------------------------- per-group rules ----
+EX_STOP = {"the", "and", "for", "with", "that", "this", "from", "into", "have", "they", "them", "their", "then",
+           "than", "what", "when", "were", "will", "your", "said", "just", "like", "been", "only", "over", "some",
+           "PADD", "yes", "not", "but", "all", "one", "out", "his", "her", "him", "she"}
+
+
+def rules_slice(paths: Paths, groups: list[str], locked: str | None, examples: list[str]) -> list[dict]:
+    """-> rules_X.json per group: the glossary entries and EXAMPLES/rulings bullets that concern this
+    group's source, so agents read a few KB instead of the whole (ever-growing) rulings file.
+    A bullet with no Latin word is a general rule and is always kept; one with Latin words is kept
+    when any of them (len >= 3, not a stopword) occurs in the group's source."""
+    from .glossary import filter_locked
+    from .helpers import normalize_apostrophes
+    gl = {}
+    if locked and os.path.exists(locked):
+        with open(locked, encoding="utf-8") as f:
+            gl = json.load(f)
+    bullets = []
+    for ex in examples:
+        if not os.path.exists(ex):
+            print(f"WARNING: {ex} not found"); continue
+        cur = None
+        for line in open(ex, encoding="utf-8"):
+            if re.match(r"\s*(?:[-*]|\d+\.|\|)\s", line):
+                cur = [line.rstrip("\n")]; bullets.append(cur)
+            elif cur is not None and line.strip() and line.startswith((" ", "\t")):
+                cur.append(line.rstrip("\n"))
+            else:
+                cur = None
+    bullets = ["\n".join(b) for b in bullets]
+    words = [{w.lower() for w in re.findall(r"[A-Za-z][A-Za-z’'\-]{2,}", normalize_apostrophes(b))
+              if w.lower() not in {x.lower() for x in EX_STOP}} for b in bullets]
+    full = sum(len(b) for b in bullets)
+    out = []
+    for g in groups:
+        src = [r["source_text"] for r in paths.group_src(g).values()]
+        corpus = normalize_apostrophes("\n".join(src)).lower()
+        general = [b for b, w in zip(bullets, words) if not w]
+        hit = [b for b, w in zip(bullets, words)
+               if w and any(re.search(rf"(?<![a-z]){re.escape(x)}(?![a-z])", corpus) for x in w)]
+        sub = filter_locked(gl, src) if gl else {}
+        obj = {"group": g, "glossary": sub.get("terms", []), "characters": sub.get("characters", []),
+               "general": general, "rulings": hit}
+        op = paths.f(f"rules_{g}.json")
+        write_json(op, obj)
+        size = sum(len(b) for b in general + hit)
+        row = {"group": g, "glossary": len(obj["glossary"]), "rulings": len(hit), "general": len(general),
+               "chars": size, "of": full}
+        out.append(row)
+        print(f"[{g}] glossary={row['glossary']} rulings={row['rulings']} general={row['general']} "
+              f"({size}/{full} chars of bullets) -> {op}")
+    return out
+
+
+# --------------------------------------------------------------- stats ----
+def stats(paths: Paths, groups: list[str]) -> str:
+    """Per-stage yield: Blind flags used, gate rejects, Challenger rejects split by
+    flag-corroborated / category / severity -> stats.md. Run after the first few groups to
+    decide whether a stage (or the Challenger on a tier) is worth its tokens."""
+    flags = used = 0
+    gate = collections.Counter()
+    tot, rej = collections.Counter(), collections.Counter()
+    for g in groups:
+        fp = paths.f(f"findings_{g}.jsonl")
+        if not os.path.exists(fp):
+            continue
+        F = read_jsonl(fp)
+        fl = {x["id"] for x in read_jsonl(paths.f(f"flags_{g}.jsonl"))} if os.path.exists(paths.f(f"flags_{g}.jsonl")) else set()
+        flags += len(fl)
+        used += len(fl & {x for f in F for x in (f.get("flags") or [])})
+        for r in (read_jsonl(paths.f(f"rejected_{g}.jsonl")) if os.path.exists(paths.f(f"rejected_{g}.jsonl")) else []):
+            gate[str(r.get("_reject", "")).split("(")[0].split(":")[0]] += 1
+        V = {v["id"]: v for v in read_jsonl(paths.f(f"verdicts_{g}.jsonl"))} if os.path.exists(paths.f(f"verdicts_{g}.jsonl")) else {}
+        for f in F:
+            if f["id"] in V:
+                k = ("flag" if f.get("flags") else "noflag", f.get("category"), int(f.get("severity") or 0))
+                tot[k] += 1
+                rej[k] += V[f["id"]].get("verdict") == "reject"
+    L = [f"# review stats ({len(groups)} groups)", "",
+         f"- Blind flags: {flags}, used by a finding: {used}" + (f" ({used / flags:.0%})" if flags else ""),
+         "- gate rejects: " + ", ".join(f"{k} {v}" for k, v in gate.most_common()), "",
+         "| flag | cat | sev | challenged | rejected | rate |", "|---|---|---|---|---|---|"]
+    for k in sorted(tot):
+        L.append(f"| {k[0]} | {k[1]} | {k[2]} | {tot[k]} | {rej[k]} | {rej[k] / tot[k]:.1%} |")
+    for side in ("flag", "noflag"):
+        t = sum(v for k, v in tot.items() if k[0] == side); r = sum(v for k, v in rej.items() if k[0] == side)
+        if t:
+            L.append(f"| **{side}** | | | {t} | {r} | {r / t:.1%} |")
+    txt = "\n".join(L) + "\n"
+    with open(paths.f("stats.md"), "w", encoding="utf-8") as f:
+        f.write(txt)
+    print(txt)
+    return txt
 
 
 def _esc(s) -> str:
@@ -682,7 +831,17 @@ def main(argv=None):
     inv.add_argument("--max-terms", type=int, default=200)
 
     common(sub.add_parser("pre", help="mechanical gate -> findings_X.pre.jsonl + rejected_X.jsonl"), files="FINDINGS_JSONL")
-    common(sub.add_parser("segs", help="segments the Challenger needs -> segs_X.json"), files="FINDINGS_PRE_JSONL")
+    sg = sub.add_parser("segs", help="findings + segments the Challenger needs -> challenge_X.jsonl / segs_X.json")
+    common(sg, files="FINDINGS_PRE_JSONL")
+    sg.add_argument("--tier", action="store_true",
+                    help="auto-accept Blind-flag-corroborated findings below --min-sev (verdicts_X.auto.jsonl)")
+    sg.add_argument("--min-sev", type=int, default=3, help="with --tier: flagged findings at/above this still go to the Challenger")
+    sg.add_argument("--sample", type=float, default=0.05, help="with --tier: fraction of auto findings still challenged (spot check)")
+    rs = sub.add_parser("rules", help="per-group slice of glossary + rulings -> rules_X.json")
+    common(rs, groups=True)
+    rs.add_argument("--locked", help="glossary.locked.json (default <cache dir>/glossary.locked.json)")
+    rs.add_argument("--examples", nargs="+", help="rulings files (default <review dir>/EXAMPLES.md)")
+    common(sub.add_parser("stats", help="per-stage yield (flags used, gate/Challenger rejects by tier) -> stats.md"), groups=True)
     common(sub.add_parser("blind", help="target-only copy of groups for the Blind Reader -> groups/blind_X.json"), groups=True)
     common(sub.add_parser("hints", help="validate Blind Reader flags -> hints_X.json for the Reviewer"), files="FLAGS_JSONL")
     common(sub.add_parser("final", help="merge verdicts -> apply_X.json (A/B) + review_X.md (C/D)"), groups=True)
@@ -723,7 +882,12 @@ def main(argv=None):
     elif a.cmd == "pre":
         pre(paths, rules, a.files)
     elif a.cmd == "segs":
-        segs_for(paths, a.files)
+        segs_for(paths, a.files, a.tier, a.min_sev, a.sample)
+    elif a.cmd == "rules":
+        locked = a.locked or os.path.join(os.path.dirname(os.path.abspath(a.cache)), "glossary.locked.json")
+        rules_slice(paths, a.groups, locked, a.examples or [paths.f("EXAMPLES.md")])
+    elif a.cmd == "stats":
+        stats(paths, a.groups)
     elif a.cmd == "blind":
         blind(paths, a.groups)
     elif a.cmd == "hints":
