@@ -171,3 +171,66 @@ def test_blind_and_hints(tmp_path, make_project):
     assert (res["flags"], res["segments"], res["rejected"]) == (1, 1, 2)
     h = json.load(open(paths.f("hints_g1.json"), encoding="utf-8"))
     assert h[0]["source_text"] == "four <i>five</i> six" and h[0]["flags"][0]["id"] == "g1-b001"
+
+
+def test_redline_waivable_entry():
+    r = _rules(redline=[{"re": r"上校|舰长", "waivable": True}, "号"])
+    f = _f("Kira 上校这么说的", "Kira 舰长这么说的", cat="D")
+    assert review.check(f, SEG, r)[1] == "E_redline"                                  # no waiver -> still a redline
+    assert review.check(dict(f, redline_waiver="source: Captain of her ship"), SEG, r)[0]
+    # a non-waivable entry stays hard even with a waiver
+    assert review.check(_f("<i>Euphrates</i> 号跑了", "<i>Euphrates</i> 跑了", redline_waiver="x"), SEG, r)[1] == "E_redline"
+
+
+def test_needs_challenge_tiers():
+    assert review.needs_challenge({"id": "a", "flags": ["b1"], "severity": 2}) == ""
+    assert review.needs_challenge({"id": "a", "severity": 1}) == "unflagged"
+    assert review.needs_challenge({"id": "a", "flags": ["b1"], "severity": 3}) == "severity"
+    assert review.needs_challenge({"id": "a", "flags": ["b1"], "severity": 1, "latin_change": True}) == "latin"
+    assert review.needs_challenge({"id": "a", "flags": ["b1"], "severity": 1, "redline_waiver": "x"}) == "waiver"
+    assert review.needs_challenge({"id": "a", "flags": ["b1"], "severity": 1}, sample=1.0) == "sample"
+
+
+def test_segs_tier_auto_verdicts_and_final(tmp_path, make_project):
+    cache = _project_dir(tmp_path, make_project)
+    paths = review.Paths(cache)
+    os.makedirs(paths.groups)
+    batch.main(["split", cache, "--stage", "review", "--prefix", "g", "--target", "10",
+                "--out-dir", paths.groups, "--context", "0"])
+    review.write_jsonl(paths.f("findings_g1.jsonl"), [
+        {"id": "g1-001", "text_index": 1, "category": "B", "severity": 2, "offending": "二", "proposed": "贰", "flags": ["g1-b1"]},
+        {"id": "g1-002", "text_index": 2, "category": "B", "severity": 2, "offending": "六", "proposed": "陆"},
+    ])
+    rules = review.load_rules(paths)
+    review.pre(paths, rules, [paths.f("findings_g1.jsonl")])
+    review.segs_for(paths, [paths.f("findings_g1.pre.jsonl")], tier=True, sample=0.0)
+    assert [f["id"] for f in review.read_jsonl(paths.f("challenge_g1.jsonl"))] == ["g1-002"]
+    assert [v["id"] for v in review.read_jsonl(paths.f("verdicts_g1.auto.jsonl"))] == ["g1-001"]
+    assert [r["text_index"] for r in json.load(open(paths.f("segs_g1.json"), encoding="utf-8"))] == [2]
+    review.write_jsonl(paths.f("verdicts_g1.jsonl"), [{"id": "g1-002", "verdict": "reject", "reason": "fine"}])
+    res = review.final(paths, rules, ["g1"])[0]
+    assert (res["apply_segments"], res["rejected"]) == (1, 1)
+    assert json.load(open(paths.f("apply_g1.json"), encoding="utf-8")) == [{"text_index": 1, "polished_text": "一 贰 三"}]
+    # without --tier everything is challenged and a stale auto file is removed
+    review.segs_for(paths, [paths.f("findings_g1.pre.jsonl")])
+    assert len(review.read_jsonl(paths.f("challenge_g1.jsonl"))) == 2
+    assert not os.path.exists(paths.f("verdicts_g1.auto.jsonl"))
+    txt = review.stats(paths, ["g1"])
+    assert "| noflag | B | 2 | 1 | 1 | 100.0% |" in txt
+
+
+def test_rules_slice(tmp_path, make_project):
+    cache = _project_dir(tmp_path, make_project)
+    paths = review.Paths(cache)
+    os.makedirs(paths.groups)
+    batch.main(["split", cache, "--stage", "review", "--prefix", "g", "--target", "10",
+                "--out-dir", paths.groups, "--context", "0"])
+    ex = tmp_path / "EXAMPLES.md"
+    ex.write_text("# x\n\n- 「的」字别扎堆\n- Seven 译「阿七」\n- five 译「伍」\n", encoding="utf-8")
+    locked = tmp_path / "work" / "glossary.locked.json"
+    locked.write_text(json.dumps({"terms": [{"src": "seven", "dst": "柒"}, {"src": "nine", "dst": "玖"}]}), encoding="utf-8")
+    row = review.rules_slice(paths, ["g1"], str(locked), [str(ex)])[0]
+    obj = json.load(open(paths.f("rules_g1.json"), encoding="utf-8"))
+    assert obj["general"] == ["- 「的」字别扎堆"]
+    assert set(obj["rulings"]) == {"- Seven 译「阿七」", "- five 译「伍」"}
+    assert [t["src"] for t in obj["glossary"]] == ["seven"] and row["glossary"] == 1

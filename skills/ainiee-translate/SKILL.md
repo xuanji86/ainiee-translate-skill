@@ -407,16 +407,22 @@ Consistency auditor；主控只跑机械闸门：`review pre`（`offending` 恰�
 协议、`config.json` 红线格式、先在人工校过的章节上做基准打分（`review benchmark/score`，判定门召回 ≥60% 且精度 ≥80%）见
 [`references/adversarial_review.md`](references/adversarial_review.md)。斜杠命令 `/ainiee-translate:review <起-止段号>`。
 
+**开工前**：全书性的译法政策（种族名音译与否、集体智慧体代词、军衔体系、外语短句）按 `references/book_bible_template.md` §5
+一次问清并落进机械规则——审完再定就是全书返工。**省 token**：`review rules` 给每组切词汇表/裁定；`review segs --tier`
+让有盲读佐证的低严重度条目免 Challenger（实测送审量 −63%，佐证条目否决率 0.1%）；前几组后 `review stats` 复核分级是否安全。
+
 ```bash
 <PFX> -m ainiee_translate.batch split "$WORK/work/cache.json" --stage review --range 438-719 --target 140 --prefix g --out-dir "$WORK/work/review/groups" --context 3
+<PFX> -m ainiee_translate.review rules "$WORK/work/cache.json" g1 g2          # → rules_gN.json（agent 读它，不读整份 EXAMPLES）
 <PFX> -m ainiee_translate.review blind "$WORK/work/cache.json" g1 g2
 # … Blind Reader ×N（Opus，只读中文）→ flags_gN.jsonl …
 <PFX> -m ainiee_translate.review hints "$WORK/work/cache.json" "$WORK/work/review"/flags_g*.jsonl
 # … Reviewer ×N（Opus，读 hints_gN.json）→ findings_gN.jsonl …
 <PFX> -m ainiee_translate.review pre  "$WORK/work/cache.json" "$WORK/work/review"/findings_g*.jsonl
-<PFX> -m ainiee_translate.review segs "$WORK/work/cache.json" "$WORK/work/review"/findings_g*.pre.jsonl
+<PFX> -m ainiee_translate.review segs --tier "$WORK/work/cache.json" "$WORK/work/review"/findings_g*.pre.jsonl   # → challenge_gN.jsonl + verdicts_gN.auto.jsonl
 <PFX> -m ainiee_translate.review inventory "$WORK/work/cache.json" --range 438-719
-# … Challenger ×N + Consistency ×1 → verdicts_gN.jsonl / findings_D.jsonl …
+# … Challenger ×N（读 challenge_gN.jsonl）+ Consistency ×1 → verdicts_gN.jsonl / findings_D.jsonl …
+<PFX> -m ainiee_translate.review stats "$WORK/work/cache.json" g1 g2           # → stats.md：各格否决率，>2% 的移回送审
 <PFX> -m ainiee_translate.review final "$WORK/work/cache.json" g1 g2 D
 <PFX> -m ainiee_translate.polish write "$WORK/work/cache.json" "$WORK/work/review"/apply_g*.json
 <PFX> -m ainiee_translate.review merge "$WORK/work/cache.json" g1 g2 D        # → review_ALL.md 给用户
@@ -484,7 +490,7 @@ $PFX -m ainiee_translate.batch write "$WORK/work/cache.json" "$WORK/work/par"/tr
 
 # 对抗性审核：切组 / 闸门 / 抽段 / 术语清单 / 合并 verdicts / 过目表 / 勾选 / 基准打分 / 留痕（详见 references/adversarial_review.md）
 $PFX -m ainiee_translate.batch split "$WORK/work/cache.json" --stage review --range 438-719 --prefix g --out-dir "$WORK/work/review/groups" --context 3
-$PFX -m ainiee_translate.review blind|hints|pre|segs|final|merge|pick|inventory|benchmark|score|log "$WORK/work/cache.json" …
+$PFX -m ainiee_translate.review rules|blind|hints|pre|segs [--tier]|final|merge|pick|inventory|stats|benchmark|score|log "$WORK/work/cache.json" …
 ```
 
 ---

@@ -4,6 +4,10 @@
 `{RANGE}`/`{COUNT}` 段范围与段数；`{SRC}`/`{CTX}` 组文件；`{OUT}` 产出文件。三个角色**必须是不同的 agent 实例**，
 Challenger 不看 Reviewer 的推理。都用 Opus（Sonnet 做 Reviewer 召回明显低）。
 
+**省 token（v1.13）**：主控先跑 `review rules gN`，prompt 里凡是「读 `{REV}/EXAMPLES.md`」都换成「读 `{REV}/rules_{N}.json`」
+（本组相关的词汇表条目 `glossary`/`characters`、通用病例 `general`、专名裁定 `rulings`）；`review segs --tier` 之后 Challenger
+只拿到 `challenge_{N}.jsonl`（有盲读佐证的低严重度条目已自动放行，不在里面）。
+
 **顺序**：Blind Reader（只读中文）→ `review hints` → Reviewer（带源文，把每条 flag 落成改法）→ `review pre` → Challenger → `review final`。
 Blind Reader 是用户发现问题的方式（在阅读器里当读者读）；Reviewer 对着英文看容易觉得「意思没错」就放过，所以先盲读。
 
@@ -52,7 +56,8 @@ Blind Reader 是用户发现问题的方式（在阅读器里当读者读）；R
 > - `proposed`：替换 `offending` 的子串。**范围按病因定**：用词问题改词；句式问题（重心后置、定语堆叠、名词化、英文语序、对白不像人话）**把整句作为 offending 重写**——按中文作者的口吻重新组织，不要在原句骨架上修修补补。整段重写仍不允许；一句之内人名、`<i>/<b>`、英文 token 必须原样保留，意思不增不减（机械闸门会拦下长度变化超过一倍或缩到一半以下的重写）；不得增删 `<i>` `</i>` `<b>` `</b>`；不得改动任何拉丁字母（人名、舰名、术语原文）——除非是 A 类补回漏译的专名，此时加 `"latin_change":true`
 > - `source_evidence`：源文对应子串（A/C 必填）；`severity` 3=意思错或读不通 / 2=明显别扭 / 1=可改可不改；`confidence` 0–1
 > - `category` ∈ A/B/C/D。触碰红线的不要写——写了也会被作废
-> - 由 Blind Reader flag 引出的 finding 加 `"flags":["{N}-b001"]`，Challenger 据此知道这里有读者绊过
+> - 由 Blind Reader flag 引出的 finding 加 `"flags":["{N}-b001"]`，Challenger 据此知道这里有读者绊过（**别漏标**：`review segs --tier` 靠它决定哪些条目免复核，漏标只会多花 Challenger，乱标会让坏改动免审）
+> - 要改红线里标了 `waivable` 的写法（典型：源文军衔与现译不符），加 `"redline_waiver":"源文依据"`；这种条目一定会送 Challenger
 >
 > 第 5 步 产出：用 Python 写 builder `{REV}/build_findings_{N}.py`：定义 findings 列表；载入 `{SRC}`；**逐条断言** `translated_text.count(offending) == 1`、替换后 `<i>`/`<b>` 计数不变、不含「」；不通过的当场修正或删掉；最后逐行 `json.dumps(f, ensure_ascii=False)` 写到 `{OUT}`。跑它，打印条数和各类计数。
 >
@@ -64,7 +69,7 @@ Blind Reader 是用户发现问题的方式（在阅读器里当读者读）；R
 
 > 你是《{BOOK}》译本的**否决审**。另一名审校对第 {N} 组提交了一份问题清单，**你的职责是把站不住的条目否掉**。你不知道对方的推理过程，只看结论。**奖励精度：放过一条坏改动比否掉一条好改动严重。**
 >
-> 第 1 步 读：`{PROJ}/work/POLISH_REDLINES.md`（红线，触碰即否）；`{SKILL}/references/review_taxonomy.md`（判断归类对不对、severity 虚不虚）；`{REV}/EXAMPLES.md`（用户亲自裁定的病例）；`{REV}/hints_{N}.json`（Blind Reader 标出的读着别扭的地方）；`{FINDINGS}`（待审 findings，JSONL）；`{SEGS}`（涉及的段：`{"text_index","source_text","translated_text"}`）。
+> 第 1 步 读：`{PROJ}/work/POLISH_REDLINES.md`（红线，触碰即否）；`{SKILL}/references/review_taxonomy.md`（判断归类对不对、severity 虚不虚）；`{REV}/EXAMPLES.md`（用户亲自裁定的病例）；`{REV}/hints_{N}.json`（Blind Reader 标出的读着别扭的地方）；`{REV}/challenge_{N}.jsonl`（待审 findings，JSONL；每条都要给 verdict）；`{SEGS}`（涉及的段：`{"text_index","source_text","translated_text"}`）。
 >
 > 第 2 步 逐条质疑，**先尝试否决**，四问任中其一即 `reject`：
 > 1. **原译其实没错**——对照源文，现译已准确通顺？对方把「风格偏好」当成了「错误」？
@@ -102,7 +107,8 @@ Blind Reader 是用户发现问题的方式（在阅读器里当读者读）；R
 
 ## 主控派发要点
 
-- 一条消息并发一波（5 个左右 Opus）；Reviewer 全部收齐 → `review pre` + `review segs` → 再发 Challenger 波（同时发 Consistency）。
+- 一条消息并发一波（5 个左右 Opus）；Reviewer 全部收齐 → `review pre` + `review segs --tier` → 再发 Challenger 波（同时发 Consistency）。
+  `--tier` 后每组待审条目只剩约 1/3，可以一个 Challenger 审两组。前 3–5 组落地后跑 `review stats` 看各格否决率。
 - 每个 agent 落地后立刻 `review log --stage reviewer|challenger|consistency --group --model --agent --file`，别事后补。
 - Consistency 的示例**不要给方向**（「impulse 三处两译」可以，「应统一为脉冲动力」不行）——auditor 会照抄。
 - 项目病例文件 `EXAMPLES.md` 里的段不要再拿来做基准（答案泄露）；铺全书时把新一轮抓到的病例补进去。
