@@ -91,8 +91,22 @@ mkdir -p "$WORK/work" "$WORK/out"
 
 - `--type`：`AutoType`（自动检测）、`Epub`、`Txt` 等，默认 `AutoType`。
 - 成功后打印：`parsed N items -> work/cache.json`。
+- **默认只译正文**：解析后立刻跑 `scope` 划定范围（见下「步骤 2.5」）。
 - **epub 的行内排版会被保留**：源书的斜体/粗体（`<i>`、`<em>`、`<span class="italic">` 等各种写法）在 `source_text` 里统一成 `<i>…</i>` / `<b>…</b>` 标记，导出时按该段原文的实际写法还原。翻译时**原样保留标记**（见 `references/translation_rules.md`），不要再用『』手动标斜体。
 ---
+
+## 步骤 2.5：划定翻译范围（只译正文 + Historian's Note）
+
+书评、版权页、献词、题记、目录页、致谢、作者简介、出版社注册/广告页、他书试读都不译：标成排除（状态 7），agent 不会读到，导出保留原文。
+
+```bash
+<PFX> -m ainiee_translate.scope "$WORK/work/cache.json"            # 预览：每个书内文件一行 keep/DROP + 理由 + 字数
+<PFX> -m ainiee_translate.scope "$WORK/work/cache.json" --apply    # 写入（先备份）
+```
+
+按每个文件的第一段判断：章号（数字 / 罗马数字 / One / Chapter…）、Part/Book/Act、Prologue/Epilogue/Interlude、Historian's Note → 保留；
+≤6 词的全大写或「月份 年份」分部/日期标题 → 保留（它们是正文结构）；目录 ncx 保留（章节标题）；其余排除。
+预览里判错的用 `--keep <id>` / `--drop <id>` 纠正。三本实测书的非正文只占 1–1.7% 字数——省的主要是 agent 的注意力和一批无谓的审核，不是大钱。
 
 ## 步骤 2 附：修复存量项目的行内标记与空格（`repair`）
 
@@ -424,6 +438,7 @@ PFX="PYTHONPATH=$SKILL_DIR/scripts $AINIEE_PY"
 
 # 解析
 $PFX -m ainiee_translate.parse --input book.epub --type AutoType --out "$WORK/work/cache.json"
+$PFX -m ainiee_translate.scope "$WORK/work/cache.json" [--apply] [--keep ID…] [--drop ID…]   # 只译正文 + Historian's Note
 
 # 词汇表
 $PFX -m ainiee_translate.glossary --config "<config.json>" --out "$WORK/work/glossary.locked.json"
