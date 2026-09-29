@@ -8,8 +8,9 @@ ch2–5 仍抓出 ~80 段问题——几乎全是词法/搭配层（非词、固
 
 | 角色 | 模型 | 读 | 写 | 激励 |
 |---|---|---|---|---|
-| **Reviewer** | Opus | 本组源文+现译、`review_taxonomy.md`、项目红线/风格指南、前几段语境 | `findings_X.jsonl` | **奖励召回**：宁可多报；每条引用源文证据；只报子串级替换 |
-| **Challenger** | Opus（另一实例） | 仅 findings + 涉及段 + 红线 | `verdicts_X.jsonl` | **奖励否决**：原译没错 / 违反红线 / 引入新错 / 纯偏好 → reject；可 amend |
+| **Blind Reader** | Opus | **只读中文**（`groups/blind_X.json`）+ 分类清单 + `EXAMPLES.md` + 红线 | `flags_X.jsonl` | **奖励召回**：读者读着绊一下就标；不看原文，不必给改法 |
+| **Reviewer** | Opus | 本组源文+现译、`hints_X.json`（盲读标记+源文）、分类清单、`EXAMPLES.md`、红线/风格指南、前几段语境 | `findings_X.jsonl` | **奖励召回**：每条 flag 都要处理；用词病改词，句式病**整句重写**；每条引用源文证据 |
+| **Challenger** | Opus（另一实例） | findings + 涉及段 + 红线 + `EXAMPLES.md` + 盲读标记 | `verdicts_X.jsonl` | **奖励否决**：违反红线 / 引入新错 → reject；「原译没错／偏好」只在读者没绊过时才能用；可 amend |
 | **Consistency auditor** | Opus ×1 | `review inventory` 生成的术语清单 | `findings_D.jsonl` | 只判「同一英文词该不该一个译法」 |
 | **主控** | — | 全部产物 | `apply_X.json`、`review_X.md`、`review_log.jsonl` | `review pre/final` 闸门 → A/B `polish write`，C/D 列给用户 |
 
@@ -81,7 +82,10 @@ review/
 # 0. 切组：已译/已润色段都审；--range 限定章节；--prefix 让组名区分（g=真审核，b=基准）
 <PFX> -m ainiee_translate.batch split <PROJ>/work/cache.json --stage review --range 438-719 \
       --target 140 --prefix g --out-dir $REV/groups --context 3
-# 1. Wave 1：每组一个 Reviewer（Opus，同一条消息并发；prompt 见 review_prompts.md）
+# 0.5 盲读：去掉源文，每组一个 Blind Reader（Opus 并发）→ flags_gN.jsonl；校验并挂回源文 → hints_gN.json
+<PFX> -m ainiee_translate.review blind <PROJ>/work/cache.json g1 g2
+<PFX> -m ainiee_translate.review hints <PROJ>/work/cache.json $REV/flags_g1.jsonl $REV/flags_g2.jsonl
+# 1. Wave 1：每组一个 Reviewer（Opus，同一条消息并发；读 hints_gN.json；prompt 见 review_prompts.md）
 <PFX> -m ainiee_translate.review log <PROJ>/work/cache.json --stage reviewer --group g1 --model claude-opus-5 --agent rev-g1 --file $REV/findings_g1.jsonl
 # 2. 预闸门 + 抽 Challenger 要看的段
 <PFX> -m ainiee_translate.review pre  <PROJ>/work/cache.json $REV/findings_g1.jsonl $REV/findings_g2.jsonl

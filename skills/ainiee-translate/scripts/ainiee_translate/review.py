@@ -6,6 +6,9 @@ main agent runs between them so that no finding reaches cache.json un-gated:
              (recall denominator; term-only edits excluded via config)
   inventory  term inventory for the Consistency auditor (English term -> segments,
              co-occurrence hints, verbatim repeated source sentences)
+  blind      target-language-only copy of each group for the Blind Reader -> groups/blind_X.json
+  hints      validate the Blind Reader's flags_X.jsonl -> hints_X.json (flagged segments + source)
+             for the Reviewer; bad quotes -> rejected_flags_X.jsonl
   pre        mechanical gate on Reviewer findings -> findings_X.pre.jsonl / rejected_X.jsonl
   segs       the segments a Challenger needs (only those with findings) -> segs_X.json
   final      merge Challenger verdicts -> apply_X.json (A/B, ready for `polish write`)
@@ -31,7 +34,10 @@ verdicts_X.jsonl from Challengers, config.json with the project's rules:
 Gate rules (per finding, in order): required fields; category in A-D;
 `offending` occurs exactly once in the reviewed text; redline/settled/forbid;
 `<i>/<b>` parity via audit.lint_pair; no new soft_block issue; Latin-token
-multiset unchanged unless `latin_change` on an A finding (-> human review).
+multiset unchanged unless `latin_change` on an A finding (-> human review);
+a sentence-scale rewrite (offending >= REWRITE_MIN Han chars) must keep its Han
+length within REWRITE_RATIO of the original, so a rewrite cannot silently drop
+or pad content.
 """
 import argparse
 import collections
@@ -49,6 +55,8 @@ DEFAULT_SOFT_BLOCK = ["cjk_corner_quote", "odd_ascii_quotes", "halfwidth_punct",
 DEFAULT_LEAK_FILES = ["DEFECT_TAXONOMY.md", "AI_FLAVOR_CHECKLIST.md", "EXAMPLES.md"]
 CATEGORY_RE = re.compile(r"(?:降为|升为|改为|改|应为|应归|归为|归|reclassif\w* as|as)\s*([ABCD])(?![A-Za-z])")
 SEVERITY_RE = re.compile(r"severity\D{0,8}([123])\D{0,6}(?:降为|改为|改|应为|->|→)\s*([123])")
+REWRITE_MIN = 12              # Han chars in `offending` from which a finding counts as a sentence rewrite
+REWRITE_RATIO = (0.5, 2.0)    # allowed Han(proposed)/Han(offending) for such rewrites
 
 
 # ------------------------------------------------------------------ IO ----
@@ -75,9 +83,9 @@ def write_json(p, obj):
 
 
 def group_of(path: str) -> str:
-    m = re.search(r"(?:findings|verdicts)_([A-Za-z0-9]+)", os.path.basename(path))
+    m = re.search(r"(?:findings|verdicts|flags)_([A-Za-z0-9]+)", os.path.basename(path))
     if not m:
-        raise ValueError(f"cannot infer group id from {path!r} (expected findings_X.jsonl)")
+        raise ValueError(f"cannot infer group id from {path!r} (expected findings_X / flags_X .jsonl)")
     return m.group(1)
 
 
@@ -172,6 +180,9 @@ def check(f: dict, seg: dict | None, rules: Rules) -> tuple[bool, str, str | Non
     why = rules.violation(off, prop)
     if why:
         return False, why, None
+    h_off, h_prop = len(HAN.findall(off)), len(HAN.findall(prop))
+    if h_off >= REWRITE_MIN and not (REWRITE_RATIO[0] <= h_prop / h_off <= REWRITE_RATIO[1]):
+        return False, f"rewrite_length({h_prop}/{h_off})", None
     new = old.replace(off, prop, 1)
     hard, soft_new = audit.lint_pair(src, new)
     if hard:
@@ -225,6 +236,52 @@ def segs_for(paths: Paths, files: list[str]) -> None:
         op = paths.f(f"segs_{g}.json")
         write_json(op, rows)
         print(f"[{g}] segs={len(rows)} -> {op}")
+
+
+def blind(paths: Paths, groups: list[str]) -> None:
+    """Strip the source: the Blind Reader must judge the target text the way a reader of the book does."""
+    for g in groups:
+        segs = paths.group_src(g)
+        rows = [{"text_index": i, "translated_text": r["translated_text"]} for i, r in sorted(segs.items())]
+        ctx_p = os.path.join(paths.groups, f"grp_{g}_ctx.json")
+        ctx = []
+        if os.path.exists(ctx_p):
+            with open(ctx_p, encoding="utf-8") as f:
+                ctx = [{"text_index": r["text_index"], "translated_text": r.get("translated_text") or ""}
+                       for r in json.load(f)]
+        op = os.path.join(paths.groups, f"blind_{g}.json")
+        write_json(op, {"context": ctx, "segments": rows})
+        print(f"[{g}] blind segments={len(rows)} context={len(ctx)} -> {op}")
+
+
+def hints(paths: Paths, files: list[str]) -> list[dict]:
+    """flags_X.jsonl rows {id, text_index, quote, why[, severity]} -> hints_X.json grouped per segment,
+    with the source attached, for the Reviewer. A flag whose quote is not in the segment is rejected."""
+    out = []
+    for p in files:
+        g = group_of(p)
+        segs = paths.group_src(g)
+        per, bad = collections.defaultdict(list), []
+        for fl in read_jsonl(p):
+            ti = fl.get("text_index")
+            seg = segs.get(int(ti)) if str(ti).isdigit() else None
+            q = (fl.get("quote") or "").strip()
+            if seg is None:
+                fl["_reject"] = "unknown_index"
+            elif not q or q not in seg["translated_text"]:
+                fl["_reject"] = "quote_not_found"
+            else:
+                per[int(ti)].append({k: fl.get(k) for k in ("id", "quote", "why", "severity") if fl.get(k) is not None})
+                continue
+            bad.append(fl)
+        rows = [{"text_index": i, "source_text": segs[i]["source_text"], "translated_text": segs[i]["translated_text"],
+                 "flags": fl} for i, fl in sorted(per.items())]
+        write_json(paths.f(f"hints_{g}.json"), rows)
+        write_jsonl(paths.f(f"rejected_flags_{g}.jsonl"), bad)
+        row = {"group": g, "flags": sum(len(v) for v in per.values()), "segments": len(rows), "rejected": len(bad)}
+        out.append(row)
+        print(f"[{g}] flags={row['flags']} on {row['segments']} segs, rejected={row['rejected']} -> hints_{g}.json")
+    return out
 
 
 def _apply_verdicts(findings: dict, verdicts: dict, segs: dict, rules: Rules):
@@ -467,6 +524,8 @@ def score(paths: Paths, rules: Rules, groups: list[str]) -> str:
         found_acc = {int(f["text_index"]) for f in pre_ if acc(f)}
         found_ab = {int(f["text_index"]) for f in pre_ if f["category"] in ("A", "B") and acc(f)}
         acc_rate = (sum(1 for f in pre_ if acc(f)) / len(pre_)) if pre_ and verd else None
+        fp_ = paths.f(f"flags_{g}.jsonl")
+        flagged = {int(x["text_index"]) for x in read_jsonl(fp_)} if os.path.exists(fp_) else None
         pct = lambda a, b: f"{len(a)}/{len(b)} = {len(a) / max(1, len(b)):.0%}"  # noqa: E731
         lines.append(
             f"[{g}] human-changed {len(in_range)} seg ({len(leaked)} leaked via checklist examples) | "
@@ -476,7 +535,9 @@ def score(paths: Paths, rules: Rules, groups: list[str]) -> str:
             f"     recall(A/B ok):          {pct(found_ab & in_range, in_range)}\n"
             f"     Challenger accept rate:  {acc_rate if acc_rate is None else f'{acc_rate:.0%}'} | "
             f"flagged but human left as-is: {len(found_acc - in_range)}\n"
-            f"     human-changed, not flagged: {sorted(in_range - found_pre)}")
+            f"     human-changed, not flagged: {sorted(in_range - found_pre)}"
+            + (f"\n     blind-reader flags:      {pct(flagged & in_range, in_range)}   | leak-free: {pct(flagged & clean, clean)}"
+               if flagged is not None else ""))
     out = "\n".join(lines)
     print(out)
     with open(paths.f("scores.md"), "a", encoding="utf-8") as f:
@@ -622,6 +683,8 @@ def main(argv=None):
 
     common(sub.add_parser("pre", help="mechanical gate -> findings_X.pre.jsonl + rejected_X.jsonl"), files="FINDINGS_JSONL")
     common(sub.add_parser("segs", help="segments the Challenger needs -> segs_X.json"), files="FINDINGS_PRE_JSONL")
+    common(sub.add_parser("blind", help="target-only copy of groups for the Blind Reader -> groups/blind_X.json"), groups=True)
+    common(sub.add_parser("hints", help="validate Blind Reader flags -> hints_X.json for the Reviewer"), files="FLAGS_JSONL")
     common(sub.add_parser("final", help="merge verdicts -> apply_X.json (A/B) + review_X.md (C/D)"), groups=True)
     m = sub.add_parser("merge", help="all groups' leftover C/D -> review_ALL.md")
     common(m, groups=True)
@@ -661,6 +724,10 @@ def main(argv=None):
         pre(paths, rules, a.files)
     elif a.cmd == "segs":
         segs_for(paths, a.files)
+    elif a.cmd == "blind":
+        blind(paths, a.groups)
+    elif a.cmd == "hints":
+        hints(paths, a.files)
     elif a.cmd == "final":
         final(paths, rules, a.groups)
     elif a.cmd == "merge":

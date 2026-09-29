@@ -386,7 +386,7 @@ verify 是**词汇表执行器**，不是**发现器**。它只能发现「锁�
 ## 步骤 7.5：对抗性审核（可选，去 AI 味 + 抓润色漏掉的误译）
 
 润色只改表达，且同一个模型自审漏得多（Warpath 实测：Sonnet 润色后人工逐句校 4 章仍抓出 ~80 段，几乎全是词法/搭配层与真误译）。
-本步把**找问题**（Reviewer，奖励召回）和**否决问题**（Challenger，奖励精度）拆给两个互不通气的 Opus 实例，另加一个只读术语清单的
+本步先让 **Blind Reader** 只读中文、像读者一样标出读着别扭的地方（`review blind` / `review hints`），再把**找问题**（Reviewer，带源文逐条落实 flag，句式病整句重写）和**否决问题**（Challenger，奖励精度，但读者绊过的地方不许以「原译可通／偏好」否决）拆给互不通气的 Opus 实例，另加一个只读术语清单的
 Consistency auditor；主控只跑机械闸门：`review pre`（`offending` 恰好一次、红线改动即拒、定稿术语只加不删、`<i>/<b>` 成对、
 不动拉丁 token）→ `review final`（合并 verdicts：A 误译/B 硬伤自动进 `apply_X.json` → `polish write`；C 翻译腔/D 不一致进 `review_ALL.md`
 给用户勾选 → `review pick`）。分类标准与十二条 AI 味清单在 `references/review_taxonomy.md`，三份 prompt 在 `references/review_prompts.md`，
@@ -395,7 +395,10 @@ Consistency auditor；主控只跑机械闸门：`review pre`（`offending` 恰�
 
 ```bash
 <PFX> -m ainiee_translate.batch split "$WORK/work/cache.json" --stage review --range 438-719 --target 140 --prefix g --out-dir "$WORK/work/review/groups" --context 3
-# … Reviewer ×N（Opus）→ findings_gN.jsonl …
+<PFX> -m ainiee_translate.review blind "$WORK/work/cache.json" g1 g2
+# … Blind Reader ×N（Opus，只读中文）→ flags_gN.jsonl …
+<PFX> -m ainiee_translate.review hints "$WORK/work/cache.json" "$WORK/work/review"/flags_g*.jsonl
+# … Reviewer ×N（Opus，读 hints_gN.json）→ findings_gN.jsonl …
 <PFX> -m ainiee_translate.review pre  "$WORK/work/cache.json" "$WORK/work/review"/findings_g*.jsonl
 <PFX> -m ainiee_translate.review segs "$WORK/work/cache.json" "$WORK/work/review"/findings_g*.pre.jsonl
 <PFX> -m ainiee_translate.review inventory "$WORK/work/cache.json" --range 438-719
@@ -466,7 +469,7 @@ $PFX -m ainiee_translate.batch write "$WORK/work/cache.json" "$WORK/work/par"/tr
 
 # 对抗性审核：切组 / 闸门 / 抽段 / 术语清单 / 合并 verdicts / 过目表 / 勾选 / 基准打分 / 留痕（详见 references/adversarial_review.md）
 $PFX -m ainiee_translate.batch split "$WORK/work/cache.json" --stage review --range 438-719 --prefix g --out-dir "$WORK/work/review/groups" --context 3
-$PFX -m ainiee_translate.review pre|segs|final|merge|pick|inventory|benchmark|score|log "$WORK/work/cache.json" …
+$PFX -m ainiee_translate.review blind|hints|pre|segs|final|merge|pick|inventory|benchmark|score|log "$WORK/work/cache.json" …
 ```
 
 ---

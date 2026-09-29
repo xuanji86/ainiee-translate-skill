@@ -141,3 +141,33 @@ def test_load_rules_reads_config_and_glossary(tmp_path, make_project):
     assert r.violation("那把相位枪", "那把相位枪，沉甸甸的") == ""   # term kept
     assert r.violation("那把相位枪", "那把枪") == "E_settled_removed"
     assert r.violation("a", "「a」") == ""                    # forbid disabled by config
+
+
+def test_check_sentence_rewrite_length_guard():
+    seg = {"text_index": 1, "source_text": "x",
+           "translated_text": "他在剖解通讯面板内存缓冲区里的活动日志时，不喜欢自己看到的东西。"}
+    r = _rules()
+    off = "他在剖解通讯面板内存缓冲区里的活动日志时，不喜欢自己看到的东西"
+    ok, _, new = review.check(_f(off, "他剖解通讯面板内存缓冲区里的活动日志，越看越不喜欢"), seg, r)
+    assert ok and new.startswith("他剖解")
+    assert review.check(_f(off, "他不喜欢"), seg, r)[1].startswith("rewrite_length")          # content dropped
+    assert review.check(_f("不喜欢", "一点也不喜欢啊呀"), seg, r)[0]                           # short edits unguarded
+
+
+def test_blind_and_hints(tmp_path, make_project):
+    cache = _project_dir(tmp_path, make_project)
+    paths = review.Paths(cache)
+    os.makedirs(paths.groups)
+    batch.main(["split", cache, "--stage", "review", "--prefix", "g", "--target", "10",
+                "--out-dir", paths.groups, "--context", "0"])
+    review.blind(paths, ["g1"])
+    b = json.load(open(os.path.join(paths.groups, "blind_g1.json"), encoding="utf-8"))
+    assert all(set(r) == {"text_index", "translated_text"} for r in b["segments"])     # no source leaks through
+    review.write_jsonl(paths.f("flags_g1.jsonl"), [
+        {"id": "g1-b001", "text_index": 2, "quote": "<i>五</i>", "why": "读着绊"},
+        {"id": "g1-b002", "text_index": 2, "quote": "不存在", "why": "x"},
+        {"id": "g1-b003", "text_index": 99, "quote": "七", "why": "x"}])
+    res = review.hints(paths, [paths.f("flags_g1.jsonl")])[0]
+    assert (res["flags"], res["segments"], res["rejected"]) == (1, 1, 2)
+    h = json.load(open(paths.f("hints_g1.json"), encoding="utf-8"))
+    assert h[0]["source_text"] == "four <i>five</i> six" and h[0]["flags"][0]["id"] == "g1-b001"

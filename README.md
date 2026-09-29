@@ -5,7 +5,7 @@
 **Agent 原生的长篇翻译管线** —— 让编码 agent 本身当翻译引擎，端到端译完一本书。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.10.0-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
+[![Version](https://img.shields.io/badge/version-1.11.0-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue.svg)](pyproject.toml)
 [![Tests](https://img.shields.io/badge/tests-90%20passing-brightgreen.svg)](tests/)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://claude.com/claude-code)
@@ -210,7 +210,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 | `audit` | `<cache> [--out audit.json] [--allow-tag-mismatch]` |
 | `progress` | `<cache> [--watch\|--once\|--line\|--json [--out F]\|--serve PORT [--open]]`（多 agent 进度面板 / statusline 一行 / 本地网页看板；润色阶段双进度条）|
 | `precedents` | `<cache> --for grp_*_src.json [--locked L] --out BOOK_BIBLE.md`（续翻时从已译段抽专名先例）|
-| `review` | `pre <cache> findings_X.jsonl…` · `segs <cache> findings_X.pre.jsonl…` · `inventory <cache> --range A-B` · `final <cache> X…` · `merge <cache> X…` · `pick <cache> X… --ids …` · `benchmark <cache> --baseline BAK --range A-B` · `score <cache> X…` · `log <cache> --stage … --file …`（对抗性审核的机械半边；见 `references/adversarial_review.md`）|
+| `review` | `blind <cache> X…` · `hints <cache> flags_X.jsonl…` · `pre <cache> findings_X.jsonl…` · `segs <cache> findings_X.pre.jsonl…` · `inventory <cache> --range A-B` · `final <cache> X…` · `merge <cache> X…` · `pick <cache> X… --ids …` · `benchmark <cache> --baseline BAK --range A-B` · `score <cache> X…` · `log <cache> --stage … --file …`（对抗性审核的机械半边；见 `references/adversarial_review.md`）|
 
 ---
 
@@ -310,7 +310,7 @@ CJK 相关检查只对含 CJK 的译文生效。`glossary lint` 则查表本身�
 
 ### `review` —— 对抗性审核（模型层的第二道工序）
 
-上面四件都是机械检查，抓不到「中文没错但味道不对」和「词汇表之外的误译」。`review` 把**找问题**和**否决问题**拆给两个
+上面四件都是机械检查，抓不到「中文没错但味道不对」和「词汇表之外的误译」。`review` 先让 **Blind Reader 只读中文**、像读者一样标出读着别扭的地方，再把**找问题**和**否决问题**拆给两个
 互不通气的 Opus 实例：
 
 | 角色 | 激励 | 产出 |
