@@ -202,10 +202,14 @@ def _save_state(snap: dict):
 
 
 # ---------------------------------------------------------------- line ----
+def _short_name(snap: dict) -> str:
+    name = re.sub(r"^Star Trek[_:]?\s*", "", snap["project"] or "").split(":")[0].strip() or "book"
+    return re.sub(r"^[A-Za-z ]+_\s*", "", name)[:24]
+
+
 def one_line(snap: dict, rate: float | None = None) -> str:
     t = snap["total"]
-    name = re.sub(r"^Star Trek[_:]?\s*", "", snap["project"] or "").split(":")[0].strip() or "book"
-    name = re.sub(r"^[A-Za-z ]+_\s*", "", name)[:24]
+    name = _short_name(snap)
     parts = [f"📖 {name} {t['done']}/{t['workable']} ({t['done_pct']:.0f}%)"]
     if snap.get("stage") == "polish" or t.get("polished"):
         parts.append(f"润 {t['polished']}/{t['workable']} ({t['polished_pct']:.0f}%)")
@@ -231,6 +235,38 @@ def write_line_file(text: str) -> None:
             f.write(text)
     except OSError:
         pass
+
+
+# ------------------------------------------------------- statuspane ----
+# The claude-statuspane mod draws any JSON file in this folder as a progress row:
+# {"label", "percent", "text", "ttl"}; https://github.com/xuanji86/claude-statuspane
+def statuspane_item(snap: dict, rate: float | None = None) -> dict:
+    t = snap["total"]
+    polish = snap.get("stage") == "polish" or bool(t.get("polished"))
+    done, pct = (t["polished"], t["polished_pct"]) if polish else (t["done"], t["done_pct"])
+    text = f"{'润 ' if polish else ''}{done}/{t['workable']}" + (f" · {rate:.1f}/min" if rate else "")
+    return {"label": f"📖 {_short_name(snap)}", "percent": pct, "text": text, "ttl": 300}
+
+
+def write_statuspane(snap: dict, rate: float | None = None) -> None:
+    folder = os.path.expanduser(os.environ.get("STATUSPANE_PROGRESS_DIR", "~/.claude/statuspane/progress"))
+    path = os.path.join(folder, "ainiee-translate.json")
+    try:
+        os.makedirs(folder, exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(statuspane_item(snap, rate), f, ensure_ascii=False)
+        os.replace(tmp, path)  # atomic: the mod never reads half a file
+    except OSError:
+        pass
+
+
+def publish_status(snap: dict, rate: float | None = None) -> str:
+    """The status-bar line and the statuspane row, written together; returns the line."""
+    line = one_line(snap, rate)
+    write_line_file(line)
+    write_statuspane(snap, rate)
+    return line
 
 
 # --------------------------------------------------------------- panel ----
@@ -323,7 +359,7 @@ def serve(cache_path: str, par_dir: str | None, stall_sec: int, port: int, open_
             if self.path.startswith("/snapshot.json"):
                 try:
                     snap = snapshot(cache_path, par_dir, stall_sec)
-                    write_line_file(one_line(snap))
+                    publish_status(snap)
                     body = json.dumps(snap, ensure_ascii=False).encode("utf-8")
                     ctype = "application/json; charset=utf-8"
                 except Exception as e:      # keep serving; the page shows the error
@@ -383,7 +419,7 @@ def main(argv=None):
                 snap = snapshot(a.cache, a.par, a.stall)
                 rate = rate_per_min(prev, snap) if prev else None
                 live.update(render(snap, rate))
-                write_line_file(one_line(snap, rate))
+                publish_status(snap, rate)
                 prev = {"ts": snap["ts"], "lines": _in_flight_lines(snap)}
                 time.sleep(a.interval)
     snap = snapshot(a.cache, a.par, a.stall)
@@ -398,9 +434,7 @@ def main(argv=None):
         else:
             print(json.dumps(snap, ensure_ascii=False, indent=1))
     elif a.line:
-        line = one_line(snap, rate)
-        write_line_file(line)
-        print(line)
+        print(publish_status(snap, rate))
     else:
         from rich.console import Console
         Console().print(render(snap, rate))

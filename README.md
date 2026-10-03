@@ -5,7 +5,7 @@
 **Agent 原生的长篇翻译管线** —— 让编码 agent 本身当翻译引擎，端到端译完一本书。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.13.0-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
+[![Version](https://img.shields.io/badge/version-1.14.0-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue.svg)](pyproject.toml)
 [![Tests](https://img.shields.io/badge/tests-90%20passing-brightgreen.svg)](tests/)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://claude.com/claude-code)
@@ -208,7 +208,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 | `scan` | `<cache> --locked <locked.json> --mode all` |
 | `repair` | `<cache> [--apply] [--list-marked]` |
 | `audit` | `<cache> [--out audit.json] [--allow-tag-mismatch]` |
-| `progress` | `<cache> [--watch\|--once\|--line\|--json [--out F]\|--serve PORT [--open]]`（多 agent 进度面板 / statusline 一行 / 本地网页看板；润色阶段双进度条）|
+| `progress` | `<cache> [--watch\|--once\|--line\|--json [--out F]\|--serve PORT [--open]]`（多 agent 进度面板 / statusline 一行 / 本地网页看板；润色阶段双进度条；`--watch`/`--line` 同时写 [claude-statuspane](https://github.com/xuanji86/claude-statuspane) 进度条，目录可用 `STATUSPANE_PROGRESS_DIR` 改）|
 | `scope` | `<cache> [--apply] [--keep ID…] [--drop ID…] [--force]`（只译正文 + Historian's Note：书评/版权/献词/题记/目录页/致谢/作者简介/广告页标为排除，导出保留原文）|
 | `precedents` | `<cache> --for grp_*_src.json [--locked L] --out BOOK_BIBLE.md`（续翻时从已译段抽专名先例）|
 | `review` | `blind <cache> X…` · `hints <cache> flags_X.jsonl…` · `pre <cache> findings_X.jsonl…` · `segs <cache> findings_X.pre.jsonl…` · `inventory <cache> --range A-B` · `final <cache> X…` · `merge <cache> X…` · `pick <cache> X… --ids …` · `benchmark <cache> --baseline BAK --range A-B` · `score <cache> X…` · `log <cache> --stage … --file …`（对抗性审核的机械半边；见 `references/adversarial_review.md`）|
