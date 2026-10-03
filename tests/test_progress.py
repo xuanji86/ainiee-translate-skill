@@ -116,3 +116,16 @@ def test_serve_endpoints(tmp_path):
     snap = _json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/snapshot.json").read())
     holder["srv"].shutdown()
     assert "<table" in html and snap["total"]["done"] == 20 and snap["groups"][0]["state"] == "ready"
+
+
+def test_statuspane_row_written_atomically(tmp_path, monkeypatch):
+    work = _work(tmp_path)
+    out = tmp_path / "sp"
+    monkeypatch.setenv("STATUSPANE_PROGRESS_DIR", str(out))
+    monkeypatch.setattr(progress, "LINE_FILE", str(tmp_path / "progress.line"))
+    snap = progress.snapshot(str(work / "cache.json"))
+    line = progress.publish_status(snap, 3.14)
+    assert "20/60" in line and (tmp_path / "progress.line").read_text(encoding="utf-8") == line
+    item = json.loads((out / "ainiee-translate.json").read_text(encoding="utf-8"))
+    assert item == {"label": "📖 Demo Book", "percent": snap["total"]["done_pct"], "text": "20/60 · 3.1/min", "ttl": 300}
+    assert [p.name for p in out.iterdir()] == ["ainiee-translate.json"]  # no tmp file left behind
