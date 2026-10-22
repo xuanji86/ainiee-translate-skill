@@ -9,6 +9,7 @@ from ainiee_translate._vendor.ModuleFolders.Service.Cache.CacheFile import Cache
 from ainiee_translate._vendor.ModuleFolders.Service.Cache.CacheItem import TranslationStatus
 from ainiee_translate._vendor.ModuleFolders.Service.Cache.CacheProject import ProjectType
 from ainiee_translate._vendor.ModuleFolders.Domain.FileAccessor.EpubAccessor import EpubAccessor
+from ainiee_translate._vendor.ModuleFolders.Domain.FileReader.EpubReader import class_mark
 from ainiee_translate._vendor.ModuleFolders.Domain.FileOutputer.BaseWriter import (
     BaseBilingualWriter,
     BaseTranslatedWriter,
@@ -23,7 +24,6 @@ from ainiee_translate._vendor.ModuleFolders.Domain.FileOutputer.BaseWriter impor
 # 语义标签 <i>/<b>。
 _MARK_FALLBACK = {"i": ("i", None), "b": ("b", None)}
 _MARK_TAGS = {"i": ("i", "em", "cite", "dfn", "var"), "b": ("b", "strong")}
-_MARK_CLASSES = {"i": ("italic", "italics"), "b": ("bold",)}
 
 
 def _escape(text: str) -> str:
@@ -35,7 +35,7 @@ def _wrapper_from_original(original_html: str, mark: str):
     soup = BeautifulSoup(original_html, "html.parser")
     for tag in soup.find_all(True):
         classes = tag.get("class") or ()
-        hit = tag.name in _MARK_TAGS[mark] or any(c in _MARK_CLASSES[mark] for c in classes)
+        hit = tag.name in _MARK_TAGS[mark] or any(class_mark(c) == mark for c in classes)
         if not hit:
             continue
         attrs = "".join(

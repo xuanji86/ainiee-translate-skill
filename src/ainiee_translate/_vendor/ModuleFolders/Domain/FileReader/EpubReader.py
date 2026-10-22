@@ -24,6 +24,13 @@ INLINE_MARKS = {
 }
 INLINE_CLASS_MARKS = {"italic": "i", "italics": "i", "bold": "b"}
 _TAG_TO_MARK = {t: m for m, tags in INLINE_MARKS.items() for t in tags}
+# 出版社 CSS 常给类名加编号（italic1、bold2），去掉尾部数字再查
+_CLASS_NUM_SUFFIX = re.compile(r"\d+$")
+
+
+def class_mark(cls: str) -> str | None:
+    """CSS 类名对应的内联标记字母（i/b）。"""
+    return INLINE_CLASS_MARKS.get(_CLASS_NUM_SUFFIX.sub("", cls))
 
 
 def _mark_for(tag: Tag) -> str | None:
@@ -31,8 +38,8 @@ def _mark_for(tag: Tag) -> str | None:
     if tag.name in _TAG_TO_MARK:
         return _TAG_TO_MARK[tag.name]
     for cls in tag.get("class") or ():
-        if cls in INLINE_CLASS_MARKS:
-            return INLINE_CLASS_MARKS[cls]
+        if mark := class_mark(cls):
+            return mark
     return None
 
 
