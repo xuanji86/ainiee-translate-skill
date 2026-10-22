@@ -24,15 +24,22 @@ INLINE_MARKS = {
 }
 INLINE_CLASS_MARKS = {"italic": "i", "italics": "i", "bold": "b"}
 _TAG_TO_MARK = {t: m for m, tags in INLINE_MARKS.items() for t in tags}
+# 出版社 CSS 常给类名加编号（italic1、bold2），去掉尾部数字再查
+_CLASS_NUM_SUFFIX = re.compile(r"\d+$")
 
 
-def _mark_for(tag: Tag) -> str | None:
+def class_mark(cls: str) -> str | None:
+    """CSS 类名对应的内联标记字母（i/b）。"""
+    return INLINE_CLASS_MARKS.get(_CLASS_NUM_SUFFIX.sub("", cls))
+
+
+def mark_for(tag: Tag) -> str | None:
     """该元素对应的内联标记字母（i/b），不是强调元素则返回 None。"""
     if tag.name in _TAG_TO_MARK:
         return _TAG_TO_MARK[tag.name]
     for cls in tag.get("class") or ():
-        if cls in INLINE_CLASS_MARKS:
-            return INLINE_CLASS_MARKS[cls]
+        if mark := class_mark(cls):
+            return mark
     return None
 
 
@@ -49,7 +56,7 @@ def extract_text_with_marks(html: str) -> str:
         if not isinstance(node, Tag):
             return ""
         inner = "".join(walk(c) for c in node.children)
-        mark = _mark_for(node)
+        mark = mark_for(node)
         if mark and inner.strip():
             # 同类标记嵌套（<span class="italic"><span><i>x</i></span></span>）不重复包裹
             if inner.startswith(f"<{mark}>") and inner.endswith(f"</{mark}>"):

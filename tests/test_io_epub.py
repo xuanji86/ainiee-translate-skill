@@ -56,6 +56,7 @@ RICH_XHTML = """<?xml version="1.0" encoding="utf-8"?>
 <p>She gripped her <i>blade</i> and ran.</p>
 <p>He read <span class="italic"><span>Moby Dick</span></span> twice.</p>
 <p>A <b>loud</b> noise.</p>
+<p><span class="italic1">Closer now,</span> she thought.</p>
 <p>Plain paragraph.</p>
 </body></html>"""
 
@@ -77,6 +78,7 @@ def test_epub_preserves_inline_marks_and_spaces(tmp_path):
     assert "She gripped her <i>blade</i> and ran." in src      # 斜体保留 + 空格未丢
     assert "He read <i>Moby Dick</i> twice." in src            # span class="italic" 也识别
     assert "A <b>loud</b> noise." in src
+    assert "<i>Closer now,</i> she thought." in src           # 带编号的类名 italic1 也识别
     assert "Plain paragraph." in src
     assert not any("herblade" in s or "readMoby" in s for s in src)
 
@@ -97,6 +99,7 @@ def test_epub_marks_round_trip_to_original_markup(tmp_path):
     assert "<i>blade</i>" in xhtml                                     # 原文用 <i> → 还原 <i>
     assert '<span class="italic"><span>Moby Dick</span></span>' in xhtml  # 原文用 span → 还原 span
     assert "<b>loud</b>" in xhtml
+    assert '<span class="italic1">Closer now,</span>' in xhtml       # 带编号类名 → 原样还原
 
 
 def test_repair_rebuilds_source_from_original_html(tmp_path):
@@ -164,5 +167,12 @@ def test_repair_list_marked_finds_stale_translations_after_apply(tmp_path, capsy
     # source_text 已是新版（无需改写），--list-marked 仍须报出陈旧译文
     assert repair.main([str(cache), "--list-marked"]) == 0
     listed = _json.loads(capsys.readouterr().out)
-    assert {r["text_index"] for r in listed} == {1, 2, 3}   # 3 段带标记，第 4 段纯文本
+    assert {r["text_index"] for r in listed} == {1, 2, 3, 4}   # 4 段带标记，第 5 段纯文本
     assert all("<i>" in r["source_text"] or "<b>" in r["source_text"] for r in listed)
+
+
+def test_self_marked_element_not_wrapped_twice():
+    from ainiee_translate._vendor.ModuleFolders.Domain.FileOutputer.EpubWriter import EpubWriter
+    original = '<span class="italic1">Beneath the arch</span>'
+    out = object.__new__(EpubWriter)._rebuild_translated_tag(original, "<i>拱门之下</i>")
+    assert out == '<span class="italic1">拱门之下</span>'
