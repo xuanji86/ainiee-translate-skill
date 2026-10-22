@@ -169,3 +169,10 @@ def test_repair_list_marked_finds_stale_translations_after_apply(tmp_path, capsy
     listed = _json.loads(capsys.readouterr().out)
     assert {r["text_index"] for r in listed} == {1, 2, 3, 4}   # 4 段带标记，第 5 段纯文本
     assert all("<i>" in r["source_text"] or "<b>" in r["source_text"] for r in listed)
+
+
+def test_self_marked_element_not_wrapped_twice():
+    from ainiee_translate._vendor.ModuleFolders.Domain.FileOutputer.EpubWriter import EpubWriter
+    original = '<span class="italic1">Beneath the arch</span>'
+    out = object.__new__(EpubWriter)._rebuild_translated_tag(original, "<i>拱门之下</i>")
+    assert out == '<span class="italic1">拱门之下</span>'

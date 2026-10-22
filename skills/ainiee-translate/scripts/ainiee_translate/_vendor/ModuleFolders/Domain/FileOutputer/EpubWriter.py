@@ -9,7 +9,7 @@ from ainiee_translate._vendor.ModuleFolders.Service.Cache.CacheFile import Cache
 from ainiee_translate._vendor.ModuleFolders.Service.Cache.CacheItem import TranslationStatus
 from ainiee_translate._vendor.ModuleFolders.Service.Cache.CacheProject import ProjectType
 from ainiee_translate._vendor.ModuleFolders.Domain.FileAccessor.EpubAccessor import EpubAccessor
-from ainiee_translate._vendor.ModuleFolders.Domain.FileReader.EpubReader import class_mark
+from ainiee_translate._vendor.ModuleFolders.Domain.FileReader.EpubReader import class_mark, mark_for
 from ainiee_translate._vendor.ModuleFolders.Domain.FileOutputer.BaseWriter import (
     BaseBilingualWriter,
     BaseTranslatedWriter,
@@ -66,6 +66,16 @@ def render_marks(text: str, original_html: str) -> str:
 
 def has_marks(text: str) -> bool:
     return bool(re.search(r"</?[ib]>", text))
+
+
+def drop_self_mark(tag: Tag, text: str) -> str:
+    """元素本身就是斜体/粗体（如 <span class="italic1">整行</span>）时，
+    读取端会把整段包成 <i>…</i>；回写时外层标签已承载该样式，去掉这层标记免得嵌套两遍。"""
+    mark = mark_for(tag)
+    if mark and text.startswith(f"<{mark}>") and text.endswith(f"</{mark}>") \
+            and text.count(f"<{mark}>") == 1:
+        return text[len(mark) + 2:-(len(mark) + 3)]
+    return text
 
 
 class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
@@ -129,7 +139,8 @@ class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
             return translated_text
 
         original_text = original_tag.get_text()
-        processed_translated = self._copy_leading_spaces(original_text, translated_text)
+        processed_translated = drop_self_mark(
+            original_tag, self._copy_leading_spaces(original_text, translated_text))
 
         new_tag = soup.new_tag(original_tag.name)
         new_tag.attrs = original_tag.attrs.copy()
@@ -178,7 +189,8 @@ class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
 
         # 复制前导空格
         original_text = original_tag.get_text()
-        processed_trans = self._copy_leading_spaces(original_text, translated_text)
+        processed_trans = drop_self_mark(
+            original_tag, self._copy_leading_spaces(original_text, translated_text))
 
         # 1. 创建全新的译文标签
         trans_tag = soup.new_tag(original_tag.name, attrs=original_tag.attrs.copy())

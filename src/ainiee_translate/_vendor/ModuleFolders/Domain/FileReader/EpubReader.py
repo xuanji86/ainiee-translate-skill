@@ -33,7 +33,7 @@ def class_mark(cls: str) -> str | None:
     return INLINE_CLASS_MARKS.get(_CLASS_NUM_SUFFIX.sub("", cls))
 
 
-def _mark_for(tag: Tag) -> str | None:
+def mark_for(tag: Tag) -> str | None:
     """该元素对应的内联标记字母（i/b），不是强调元素则返回 None。"""
     if tag.name in _TAG_TO_MARK:
         return _TAG_TO_MARK[tag.name]
@@ -56,7 +56,7 @@ def extract_text_with_marks(html: str) -> str:
         if not isinstance(node, Tag):
             return ""
         inner = "".join(walk(c) for c in node.children)
-        mark = _mark_for(node)
+        mark = mark_for(node)
         if mark and inner.strip():
             # 同类标记嵌套（<span class="italic"><span><i>x</i></span></span>）不重复包裹
             if inner.startswith(f"<{mark}>") and inner.endswith(f"</{mark}>"):
