@@ -10,7 +10,12 @@ EXCLUDED (status 7): no agent translates it and export keeps the original text.
   scope <cache> --apply --force          also exclude segments already translated
 
 Classification is per book file (epub spine item / source file), from its first
-non-empty segment. The table of contents (ncx) is kept: it holds the chapter titles.
+non-empty segment. A short file right after a "Part One" heading is the part's subtitle: its
+title is kept and the all-italic lines after it (the epigraph) are excluded. Both tables of contents (the ncx and the in-book contents page) are kept:
+they hold the chapter titles, and translating one but not the other leaves the reader an
+English contents page (`cache fill-dupes` copies the titles across). A long prose file right
+after a story file is kept as a continuation (an interlude body whose first line is a
+dateline such as "NORTH WATCH CAMP, DAY 47" is still story).
 """
 import argparse
 import re
@@ -28,10 +33,13 @@ _STORY = re.compile(
     r"|historian[’']s note\b.*)$", re.I)
 _MONTHS = "january|february|march|april|may|june|july|august|september|october|november|december"
 _DATE = re.compile(r"^(?:(?:" + _MONTHS + r")\s+)?\d{3,4}(?:\s*(?:ad|ce))?$", re.I)
-_FRONT = re.compile(r"^(?:contents|table of contents|acknowledg|about the author|also by|praise for|"
+_TOC = re.compile(r"^(?:contents|table of contents)\b", re.I)
+_FRONT = re.compile(r"^(?:acknowledg|about the author|also by|praise for|"
                     r"for |dedicat|copyright|thank you for downloading|we hope you enjoyed|"
                     r"an original publication|pocket books|this book is a work of fiction)", re.I)
 KEEP_IDS = {"ncx"}
+_EPIGRAPH = re.compile(r"^<i>.*</i>$", re.S)
+CONTINUATION_WORDS = 200   # a prose file this long right after a story file is story too
 
 
 def _first(items) -> str:
@@ -50,6 +58,8 @@ def classify(key, items) -> tuple[bool, str]:
     words = sum(len((it.source_text or "").split()) for it in items)
     if not first:
         return False, "empty"
+    if _TOC.match(first):
+        return True, "table of contents"
     if _FRONT.match(first):
         return False, "front/back matter"
     if _STORY.match(first):
@@ -63,6 +73,15 @@ def plan(project, keep=(), drop=()):
     rows = []
     for key, items in chapters(project):  # one entry per book file, reading order
         ok, why = classify(key, items)
+        words = sum(len((it.source_text or "").split()) for it in items)
+        prev = rows[-1] if rows else None
+        if not ok and why == "not a chapter" and prev and prev["keep"] and prev["why"] != "table of contents":
+            last = _TAGS.sub("", next((it.source_text for it in reversed(prev["items"])
+                                       if (it.source_text or "").strip()), "")).strip()
+            if words >= CONTINUATION_WORDS:
+                ok, why = True, "story continuation"
+            elif re.match(r"^part\b", last, re.I):
+                ok, why = True, "part subtitle"
         if key in keep:
             ok, why = True, "kept by --keep"
         if key in drop:
@@ -80,9 +99,12 @@ def apply(cache_path: str, keep=(), drop=(), force: bool = False) -> dict:
         rows = plan(project, keep, drop)
         changed = skipped = 0
         for r in rows:
-            if r["keep"]:
+            if r["keep"] and r["why"] != "part subtitle":
                 continue
-            for it in r["items"]:
+            # a part-subtitle file keeps its title; the all-italic lines after it are the epigraph
+            items = [it for it in r["items"][1:] if _EPIGRAPH.match((it.source_text or "").strip())] \
+                if r["keep"] else r["items"]
+            for it in items:
                 if it.translation_status == TranslationStatus.EXCLUDED:
                     continue
                 if it.translation_status != TranslationStatus.UNTRANSLATED and not force:

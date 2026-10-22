@@ -15,6 +15,7 @@ Two tiers, shared by `batch write` (gate), `batch validate` (pre-write) and the
 Ported from the per-project `_audit.py` scripts that kept getting rewritten."""
 import json
 import re
+import sys
 
 from .helpers import has_cjk
 
@@ -78,21 +79,28 @@ def soft_checks(src: str, tgt: str) -> list[str]:
     return w
 
 
-def lint_pair(src: str, tgt: str, allow_tag_mismatch: bool = False) -> tuple[list[str], list[str]]:
+def rule_checks(tgt: str, rules=()) -> list[str]:
+    """Book-specific lint rules from decisions.json: [(name, regex, msg)] that must not match the target."""
+    return [f"rule:{name}" for name, rx, _ in rules if rx.search(tgt or "")]
+
+
+def lint_pair(src: str, tgt: str, allow_tag_mismatch: bool = False, rules=()) -> tuple[list[str], list[str]]:
     hard = hard_checks(src, tgt, allow_tag_mismatch)
-    return hard, ([] if hard == ["empty"] else soft_checks(src, tgt))
+    return hard, ([] if hard == ["empty"] else soft_checks(src, tgt) + rule_checks(tgt, rules))
 
 
 def audit_items(items: list[dict], allow_tag_mismatch: bool = False,
-                statuses=(1, 2), sample: int = 5) -> dict:
+                statuses=(1, 2), sample: int = 5, tag_exceptions=(), rules=()) -> dict:
     """items: [{text_index, source_text, translated_text, translation_status}].
+    `tag_exceptions`: text_indexes whose <i>/<b> counts may differ (decisions.json).
     Returns {category: {"count", "segments": [idx...], "samples": [{text_index, source, target}]}}."""
     out: dict[str, dict] = {}
+    exc = set(tag_exceptions)
     for it in items:
         if it.get("translation_status") not in statuses:
             continue
         s, t = it.get("source_text") or "", it.get("translated_text") or ""
-        hard, soft = lint_pair(s, t, allow_tag_mismatch)
+        hard, soft = lint_pair(s, t, allow_tag_mismatch or it["text_index"] in exc, rules)
         for c in hard + soft:
             row = out.setdefault(c, {"count": 0, "segments": [], "samples": []})
             row["count"] += 1
@@ -107,25 +115,32 @@ def main(argv=None):
     from . import cache_io
     ap = argparse.ArgumentParser(description="Mechanical lint of translated/polished segments")
     ap.add_argument("cache")
-    ap.add_argument("--out", help="write full report JSON here (stdout gets counts only)")
+    ap.add_argument("--out", help="also write the full report JSON here")
+    ap.add_argument("--json", action="store_true", help="print the full report JSON (stdout = pure JSON)")
     ap.add_argument("--allow-tag-mismatch", action="store_true")
     ap.add_argument("--samples", type=int, default=5)
     a = ap.parse_args(argv)
+    from . import state
+    d = state.load(a.cache)
     proj = cache_io.load_cache(a.cache)
     items = [{"text_index": it.text_index, "source_text": it.source_text,
               "translated_text": it.translated_text, "translation_status": it.translation_status}
              for it in cache_io.iter_items(proj)]
-    rep = audit_items(items, a.allow_tag_mismatch, sample=a.samples)
+    rep = audit_items(items, a.allow_tag_mismatch, sample=a.samples,
+                      tag_exceptions=state.tag_exceptions(d), rules=state.lint_rules(d))
+    hard = sum(v["count"] for k, v in rep.items() if k in HARD_KINDS)
     if a.out:
         with open(a.out, "w", encoding="utf-8") as f:
             json.dump(rep, f, ensure_ascii=False, indent=1)
-        for k, v in rep.items():
-            print(f"{k:24s} {v['count']}")
-        print(f"\nreport -> {a.out}")
-    else:
+    if a.json:
         print(json.dumps(rep, ensure_ascii=False, indent=1))
-    hard = sum(v["count"] for k, v in rep.items() if k in HARD_KINDS)
-    print(f"\n{hard} hard issue(s), {sum(v['count'] for v in rep.values()) - hard} warning(s)")
+    else:
+        for k, v in rep.items():
+            segs = v["segments"]
+            print(f"{k:24s} {v['count']:5d}  {segs[:12]}{' …' if len(segs) > 12 else ''}")
+        if a.out:
+            print(f"report -> {a.out}")
+    sys.stderr.write(f"{hard} hard issue(s), {sum(v['count'] for v in rep.values()) - hard} warning(s)\n")
     return 1 if hard else 0
 
 

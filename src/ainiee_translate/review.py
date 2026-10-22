@@ -19,7 +19,11 @@ main agent runs between them so that no finding reaches cache.json un-gated:
              + review_X.md (C/D and human-only A) + rejected_X.jsonl
   merge      every group's leftover C/D into one review_ALL.md sorted by severity
   score      recall / precision against benchmark.json (benchmark groups only)
-  log        append a provenance row (stage, model, agent, file) to review_log.jsonl
+  log        append a provenance row (stage, model, agent, file[, tokens, segments]) to review_log.jsonl
+  ledger     tokens per stage / model from the log (which stage is worth its tokens?)
+  import     another reviewer's findings (Codex, a human) -> findings_X.jsonl, then the same gate
+  dual-merge independent reviewers' issue lists -> one editor input, segments both flagged first
+  --run R    keep a pass's files in <review>/<R>/ (config.json / EXAMPLES.md stay shared in the root)
 
 Layout (default DIR = <cache dir>/review): groups/grp_X_src.json from
 `batch split --stage review --prefix`, findings_X.jsonl from Reviewers,
@@ -53,7 +57,7 @@ import json
 import os
 import re
 
-from . import audit, cache_io
+from . import audit, cache_io, state
 
 LATIN = re.compile(r"[A-Za-z][A-Za-z’'\-]*")
 HAN = re.compile(r"[一-鿿]")
@@ -97,13 +101,21 @@ def group_of(path: str) -> str:
 
 
 class Paths:
-    def __init__(self, cache: str, dir: str | None = None):
+    """<cache dir>/review is the root (config.json, EXAMPLES.md, prompts — shared by every run);
+    with `run`, a pass's files live in <root>/<run>/ so a second pass never collides with the first."""
+    def __init__(self, cache: str, dir: str | None = None, run: str | None = None):
         self.cache = cache
-        self.dir = dir or os.path.join(os.path.dirname(os.path.abspath(cache)), "review")
+        self.root = dir or os.path.join(os.path.dirname(os.path.abspath(cache)), "review")
+        self.dir = os.path.join(self.root, run) if run else self.root
         self.groups = os.path.join(self.dir, "groups")
 
     def f(self, name: str) -> str:
         return os.path.join(self.dir, name)
+
+    def shared(self, name: str) -> str:
+        """A run's own copy if it has one, else the root's."""
+        p = self.f(name)
+        return p if os.path.exists(p) else os.path.join(self.root, name)
 
     def group_src(self, g: str) -> dict[int, dict]:
         """The text the reviewer actually saw (a benchmark group = old text); falls back to the cache."""
@@ -119,7 +131,10 @@ class Paths:
 
 # --------------------------------------------------------------- rules ----
 class Rules:
-    def __init__(self, cfg: dict, glossary_dst: list[str] = ()):
+    def __init__(self, cfg: dict, glossary_dst: list[str] = (), protected: dict | None = None):
+        # text a meaning fix removed (provenance): a proposal must not bring it back
+        self.protected = protected or {}
+        self.tag_exc: set[int] = set()     # decisions.json: segments whose <i>/<b> counts may differ
         red = [r if isinstance(r, str) else r["re"] for r in cfg.get("redline", [])]
         self.redline = re.compile("|".join(red)) if red else NEVER
         # redline entries given as {"re": …, "waivable": true} may be changed by a finding that
@@ -161,7 +176,7 @@ class Rules:
 
 def load_rules(paths: Paths, locked: str | None = None) -> Rules:
     cfg = {}
-    cp = paths.f("config.json")
+    cp = paths.shared("config.json")
     if os.path.exists(cp):
         with open(cp, encoding="utf-8") as f:
             cfg = json.load(f)
@@ -173,7 +188,11 @@ def load_rules(paths: Paths, locked: str | None = None) -> Rules:
             gl = json.load(f)
         dst = [t["dst"].strip() for t in gl.get("terms", []) if (t.get("dst") or "").strip()
                and not t.get("keep_source")]
-    return Rules(cfg, dst)
+    d = state.load(paths.cache)
+    cfg = dict(cfg, settled=list(cfg.get("settled", [])) + [re.escape(x) for x in state.settled_dst(d)])
+    r = Rules(cfg, dst, state.protected_removals(paths.cache))
+    r.tag_exc = state.tag_exceptions(d)
+    return r
 
 
 # ---------------------------------------------------------------- gate ----
@@ -198,7 +217,7 @@ def check(f: dict, seg: dict | None, rules: Rules) -> tuple[bool, str, str | Non
     if h_off >= REWRITE_MIN and not (REWRITE_RATIO[0] <= h_prop / h_off <= REWRITE_RATIO[1]):
         return False, f"rewrite_length({h_prop}/{h_off})", None
     new = old.replace(off, prop, 1)
-    hard, soft_new = audit.lint_pair(src, new)
+    hard, soft_new = audit.lint_pair(src, new, int(f["text_index"]) in rules.tag_exc)
     if hard:
         return False, "tag:" + ",".join(hard), None
     _, soft_old = audit.lint_pair(src, old)
@@ -208,6 +227,9 @@ def check(f: dict, seg: dict | None, rules: Rules) -> tuple[bool, str, str | Non
     if collections.Counter(LATIN.findall(off)) != collections.Counter(LATIN.findall(prop)):
         if not (f.get("latin_change") and f["category"] == "A"):
             return False, "name_touch", None
+    back = [x for x in rules.protected.get(int(f["text_index"]), ()) if x in new and x not in old]
+    if back:
+        return False, "E_reverts_fix", None
     return True, "", new
 
 
@@ -244,7 +266,7 @@ def pre(paths: Paths, rules: Rules, files: list[str]) -> list[dict]:
 
 def needs_challenge(f: dict, min_sev: int = 3, sample: float = 0.0) -> str:
     """Tiering rule -> why this finding goes to the Challenger ('' = auto-accept).
-    Destiny (7357 gated findings): of 5034 findings backed by a Blind Reader flag the Challenger
+    A trilogy run (7357 gated findings): of 5034 findings backed by a Blind Reader flag the Challenger
     rejected 5 (0.1%); of 2323 without one it rejected 152 (6.5%, mostly C/severity-1 and A/severity-1
     'preferences'). So a flag is independent corroboration and only the uncorroborated rest needs a veto."""
     if f.get("_force_challenge") or f.get("redline_waiver"):
@@ -395,7 +417,7 @@ def final(paths: Paths, rules: Rules, groups: list[str]) -> list[dict]:
                     f["_reject"] = "apply_conflict"
                     rej.append(f)
             if kept:
-                hard, _ = audit.lint_pair(seg["source_text"], text)
+                hard, _ = audit.lint_pair(seg["source_text"], text, idx in rules.tag_exc)
                 if hard:
                     for f in kept:
                         f["_reject"] = "combined_tag"
@@ -418,7 +440,7 @@ def final(paths: Paths, rules: Rules, groups: list[str]) -> list[dict]:
 # --------------------------------------------------------- per-group rules ----
 EX_STOP = {"the", "and", "for", "with", "that", "this", "from", "into", "have", "they", "them", "their", "then",
            "than", "what", "when", "were", "will", "your", "said", "just", "like", "been", "only", "over", "some",
-           "PADD", "yes", "not", "but", "all", "one", "out", "his", "her", "him", "she"}
+           "HUD", "yes", "not", "but", "all", "one", "out", "his", "her", "him", "she"}
 
 
 def rules_slice(paths: Paths, groups: list[str], locked: str | None, examples: list[str]) -> list[dict]:
@@ -456,8 +478,10 @@ def rules_slice(paths: Paths, groups: list[str], locked: str | None, examples: l
         hit = [b for b, w in zip(bullets, words)
                if w and any(re.search(rf"(?<![a-z]){re.escape(x)}(?![a-z])", corpus) for x in w)]
         sub = filter_locked(gl, src) if gl else {}
+        idx = sorted(paths.group_src(g))
         obj = {"group": g, "glossary": sub.get("terms", []), "characters": sub.get("characters", []),
-               "general": general, "rulings": hit}
+               "general": general, "rulings": hit,
+               "decisions": state.card(paths.cache, idx[0], idx[-1]) if idx else ""}
         op = paths.f(f"rules_{g}.json")
         write_json(op, obj)
         size = sum(len(b) for b in general + hit)
@@ -525,8 +549,8 @@ def _write_review_md(path: str, rows: list[dict], title: str) -> None:
                     f"{_esc(r.get('_verdict_reason', ''))[:80]} |\n")
 
 
-def merge(paths: Paths, groups: list[str], out: str | None = None) -> int:
-    """Everything that survived the gate + Challenger but was not auto-applied, all groups, one list."""
+def leftover(paths: Paths, groups: list[str]) -> list[dict]:
+    """Everything that survived the gate + Challenger but was not auto-applied, all groups."""
     rows = []
     for g in groups:
         fp = paths.f(f"findings_{g}.pre.jsonl")
@@ -551,8 +575,17 @@ def merge(paths: Paths, groups: list[str], out: str | None = None) -> int:
             m = CATEGORY_RE.search(f["_verdict_reason"] or "")
             if m:
                 f["category"] = m.group(1)
+            m = SEVERITY_RE.search(f["_verdict_reason"] or "")
+            if m:
+                f["severity"] = int(m.group(2))
             rows.append(f)
     rows.sort(key=lambda r: (-int(r.get("severity") or 0), int(r["text_index"])))
+    return rows
+
+
+def merge(paths: Paths, groups: list[str], out: str | None = None) -> int:
+    """Everything that survived the gate + Challenger but was not auto-applied, all groups, one list."""
+    rows = leftover(paths, groups)
     out = out or paths.f("review_ALL.md")
     _write_review_md(out, rows, f"待过目合并清单（{', '.join(groups)}）")
     tally = dict(collections.Counter("%s/%s" % (r["category"], r.get("severity", "")) for r in rows))
@@ -560,9 +593,15 @@ def merge(paths: Paths, groups: list[str], out: str | None = None) -> int:
     return len(rows)
 
 
-def pick(paths: Paths, rules: Rules, ids: list[str], groups: list[str], out: str | None = None) -> int:
-    """Turn the human's chosen finding ids (from review_*.md) into one apply file for `polish write`."""
-    want = set(ids)
+def pick(paths: Paths, rules: Rules, ids: list[str], groups: list[str], out: str | None = None,
+         min_sev: int | None = None, exclude=()) -> int:
+    """Turn the human's chosen finding ids (from review_*.md) into one apply file for `batch apply`.
+    `min_sev` adds every leftover finding at/above that severity ("severity 2 以上全改");
+    `exclude` drops ids the human vetoed."""
+    want = set(ids or ())
+    if min_sev is not None:
+        want |= {f["id"] for f in leftover(paths, groups) if int(f.get("severity") or 0) >= min_sev}
+    want -= set(exclude or ())
     chosen = collections.defaultdict(list)
     for g in groups:
         fp = paths.f(f"findings_{g}.pre.jsonl")
@@ -595,7 +634,7 @@ def pick(paths: Paths, rules: Rules, ids: list[str], groups: list[str], out: str
             text = text.replace(f["offending"], f["proposed"], 1)
             applied.append(f["id"])
         if applied:
-            hard, _ = audit.lint_pair(it.source_text or "", text)
+            hard, _ = audit.lint_pair(it.source_text or "", text, idx in rules.tag_exc)
             if hard:
                 skipped.append((idx, "tag:" + ",".join(hard)))
                 continue
@@ -785,9 +824,13 @@ def inventory(paths: Paths, lo: int, hi: int, locked: str | None, min_count: int
 
 # ------------------------------------------------------------------ log ----
 def log(paths: Paths, stage: str, group: str | None, model: str | None, agent: str | None,
-        file: str | None, note: str | None = None) -> dict:
+        file: str | None, note: str | None = None, tokens: int | None = None, segments: int | None = None) -> dict:
     row = {"ts": datetime.datetime.now().isoformat(timespec="seconds"), "stage": stage, "group": group,
            "model": model, "agent": agent, "file": file}
+    if tokens:
+        row["tokens"] = tokens
+    if segments:
+        row["segments"] = segments
     if file and os.path.exists(file):
         if file.endswith(".jsonl"):
             rows = read_jsonl(file)
@@ -805,6 +848,82 @@ def log(paths: Paths, stage: str, group: str | None, model: str | None, agent: s
     return row
 
 
+# ------------------------------------------------- external reviewers ----
+def import_findings(paths: Paths, src: str, group: str, source: str = "external") -> int:
+    """Another reviewer's findings (Codex, a human, a second model) -> findings_<group>.jsonl so they
+    go through the same gate (`pre`) as ours. Rows need text_index + offending + proposed;
+    category defaults to A for meaning (sev>=2) else C; ids become <group>-NNN."""
+    rows = read_jsonl(src) if src.endswith(".jsonl") else json.load(open(src, encoding="utf-8"))
+    out, skipped = [], 0
+    for n, r in enumerate(rows, 1):
+        ti = r.get("text_index", r.get("i"))
+        off = r.get("offending") or r.get("current")
+        prop = r.get("proposed") or r.get("fix") or r.get("replacement")
+        if ti is None or not off or not prop:
+            skipped += 1          # e.g. a prose "suggestion" with no exact replacement: hand it to a human
+            continue
+        sev = int(r.get("severity") or r.get("sev") or 1)
+        cat = r.get("category") if r.get("category") in ("A", "B", "C", "D") else ("A" if sev >= 2 else "C")
+        out.append({"id": f"{group}-{n:03d}", "text_index": int(ti), "category": cat,
+                    "severity": sev, "offending": off, "proposed": prop,
+                    "reason": r.get("reason") or r.get("issue") or "", "source": source})
+    os.makedirs(paths.dir, exist_ok=True)
+    write_jsonl(paths.f(f"findings_{group}.jsonl"), out)
+    print(f"imported {len(out)}/{len(rows)} finding(s) from {source} -> findings_{group}.jsonl"
+          + (f"; {skipped} without an exact offending/proposed pair skipped (review those by hand)" if skipped else ""))
+    return len(out)
+
+
+def dual_merge(cache: str, files: list[str], out: str) -> dict:
+    """Independent reviewers' issue lists ({i|text_index, issue, fix, sev, cat}; reviewer = file name prefix)
+    -> one editor input per segment with every issue and an `agree` count. Segments two reviewers both
+    flagged come first: they are nearly always real; single-reviewer issues need checking."""
+    proj = cache_io.load_cache(cache)
+    cur = {it.text_index: it for it in cache_io.iter_items(proj)}
+    per: dict[int, list] = collections.defaultdict(list)
+    for p in files:
+        by = os.path.basename(p).split("_")[0]
+        for r in read_jsonl(p):
+            ti = int(r.get("i", r.get("text_index")))
+            per[ti].append({"by": r.get("by", by), **{k: r[k] for k in ("cat", "sev", "issue", "fix") if k in r}})
+    rows = []
+    for ti, iss in per.items():
+        it = cur.get(ti)
+        if it is None:
+            continue
+        rows.append({"i": ti, "en": it.source_text or "", "current": it.translated_text or "",
+                     "agree": len({x["by"] for x in iss}), "maxsev": max(int(x.get("sev") or 1) for x in iss),
+                     "issues": iss})
+    rows.sort(key=lambda r: (-r["agree"], -r["maxsev"], r["i"]))
+    write_json(out, rows)
+    rep = {"segments": len(rows), "findings": sum(len(r["issues"]) for r in rows),
+           "agree>1": sum(r["agree"] > 1 for r in rows), "sev>=2": sum(r["maxsev"] >= 2 for r in rows)}
+    print(json.dumps(rep, ensure_ascii=False) + f" -> {out}")
+    return rep
+
+
+def ledger(paths: Paths) -> str:
+    """Token / segment cost per stage from review_log.jsonl rows that carry --tokens."""
+    p = paths.f("review_log.jsonl")
+    rows = read_jsonl(p) if os.path.exists(p) else []
+    agg = collections.defaultdict(lambda: {"agents": 0, "tokens": 0, "segments": 0})
+    for r in rows:
+        if r.get("tokens"):
+            a = agg[(r["stage"], r.get("model") or "")]
+            a["agents"] += 1
+            a["tokens"] += int(r["tokens"])
+            a["segments"] += int(r.get("segments") or 0)
+    L = ["| stage | model | agents | tokens | segments | tokens/seg |", "|---|---|---|---|---|---|"]
+    for (st, m), a in sorted(agg.items()):
+        per = f"{a['tokens'] / a['segments']:.0f}" if a["segments"] else ""
+        L.append(f"| {st} | {m} | {a['agents']} | {a['tokens']:,} | {a['segments']} | {per} |")
+    tot = sum(a["tokens"] for a in agg.values())
+    L.append(f"| **total** | | {sum(a['agents'] for a in agg.values())} | {tot:,} | | |")
+    txt = "\n".join(L) + "\n"
+    print(txt)
+    return txt
+
+
 # ------------------------------------------------------------------ CLI ----
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Adversarial review: gate / merge / score / inventory / benchmark")
@@ -812,7 +931,8 @@ def main(argv=None):
 
     def common(p, files=None, groups=None):
         p.add_argument("cache")
-        p.add_argument("--dir", help="review dir (default <cache dir>/review)")
+        p.add_argument("--dir", help="review root (default <cache dir>/review)")
+        p.add_argument("--run", help="this pass's subdirectory of the root (e.g. ch11-end): keeps runs apart")
         if files:
             p.add_argument("files", nargs="+", metavar=files)
         if groups:
@@ -850,8 +970,20 @@ def main(argv=None):
     m.add_argument("--out")
     pk = sub.add_parser("pick", help="chosen finding ids -> apply_pick.json for `polish write`")
     common(pk, groups=True)
-    pk.add_argument("--ids", nargs="+", required=True)
+    pk.add_argument("--ids", nargs="*", default=[])
+    pk.add_argument("--min-sev", type=int, help="also every leftover finding with severity >= N")
+    pk.add_argument("--exclude", nargs="*", default=[], help="ids to leave out")
     pk.add_argument("--out")
+    im = sub.add_parser("import", help="another reviewer's findings (Codex/human) -> findings_<group>.jsonl for `pre`")
+    common(im)
+    im.add_argument("file")
+    im.add_argument("--group", required=True)
+    im.add_argument("--source", default="external")
+    dm = sub.add_parser("dual-merge", help="independent reviewers' issue lists -> one editor input (agree count)")
+    dm.add_argument("cache")
+    dm.add_argument("files", nargs="+")
+    dm.add_argument("--out", required=True)
+    common(sub.add_parser("ledger", help="tokens per stage from review_log.jsonl"))
     common(sub.add_parser("score", help="recall/precision on benchmark groups"), groups=True)
     lg = sub.add_parser("log", help="append a provenance row to review_log.jsonl")
     common(lg)
@@ -861,11 +993,22 @@ def main(argv=None):
     lg.add_argument("--agent")
     lg.add_argument("--file")
     lg.add_argument("--note")
+    lg.add_argument("--tokens", type=int, help="the agent's total tokens (from its completion notice)")
+    lg.add_argument("--segments", type=int, help="segments it handled")
 
     a = ap.parse_args(argv)
-    paths = Paths(a.cache, a.dir)
+    if a.cmd == "dual-merge":
+        dual_merge(a.cache, a.files, a.out)
+        return 0
+    paths = Paths(a.cache, a.dir, a.run)
     if a.cmd == "log":
-        log(paths, a.stage, a.group, a.model, a.agent, a.file, a.note)
+        log(paths, a.stage, a.group, a.model, a.agent, a.file, a.note, a.tokens, a.segments)
+        return 0
+    if a.cmd == "ledger":
+        ledger(paths)
+        return 0
+    if a.cmd == "import":
+        import_findings(paths, a.file, a.group, a.source)
         return 0
     rules = load_rules(paths, getattr(a, "locked", None))
     if a.cmd in ("benchmark", "inventory"):
@@ -885,7 +1028,7 @@ def main(argv=None):
         segs_for(paths, a.files, a.tier, a.min_sev, a.sample)
     elif a.cmd == "rules":
         locked = a.locked or os.path.join(os.path.dirname(os.path.abspath(a.cache)), "glossary.locked.json")
-        rules_slice(paths, a.groups, locked, a.examples or [paths.f("EXAMPLES.md")])
+        rules_slice(paths, a.groups, locked, a.examples or [paths.shared("EXAMPLES.md")])
     elif a.cmd == "stats":
         stats(paths, a.groups)
     elif a.cmd == "blind":
@@ -897,7 +1040,9 @@ def main(argv=None):
     elif a.cmd == "merge":
         merge(paths, a.groups, a.out)
     elif a.cmd == "pick":
-        pick(paths, rules, a.ids, a.groups, a.out)
+        if not a.ids and a.min_sev is None:
+            ap.error("pick needs --ids and/or --min-sev")
+        pick(paths, rules, a.ids, a.groups, a.out, a.min_sev, a.exclude)
     elif a.cmd == "score":
         score(paths, rules, a.groups)
     return 0

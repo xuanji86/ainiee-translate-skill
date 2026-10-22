@@ -9,10 +9,10 @@ glossary is missing — the class of errors that slip past a clean verify run:
   never locked, so verify never knew to check them. Glossary-independent: it
   finds candidates to ADD to the glossary. Output is ranked candidates for
   human review (it cannot tell a real omission from a term you chose to
-  translate, e.g. Vulcan→瓦肯), not hard errors.
+  translate, e.g. Avalon→阿瓦隆), not hard errors.
 
 - `find_untranslated_terms`: the inverse case — a glossary term that DOES have a
-  target translation (e.g. Starfleet→星际舰队) but whose English source leaked
+  target translation (e.g. Coastguard→海岸警卫队) but whose English source leaked
   verbatim into some segments untranslated.
 
 - `find_stray_latin`: Latin tokens that appear in the translation but NOT in the
@@ -48,8 +48,10 @@ _STOP = set(
     please right same several since some something sometimes soon still such than thanks then there therefore
     though through thus too turning under until very well whatever whatever whenever wherever whether yet
     okay yeah oh ah hey sir madam mister doctor captain commander lieutenant ensign admiral general colonel major chief
-    mr mrs ms dr st""".split()
+    mr mrs ms dr st chapter part one two three four five six seven eight nine ten eleven twelve thirteen
+    fourteen fifteen sixteen seventeen eighteen nineteen twenty""".split()
 )
+_CONTRACTION = re.compile(r"^I['’](?:m|ve|d|ll)$")
 
 
 def _proper_noun_vocab(items):
@@ -97,8 +99,8 @@ def discover_proper_nouns(items, locked=None):
       transliterated in one segment while correct in another). Act on these.
     - ``never_preserved`` — never kept verbatim anywhere; not in the glossary.
       Lower precision: this bucket also holds terms you legitimately translated
-      (e.g. Vulcan→瓦肯) alongside names transliterated everywhere
-      (e.g. Tenmei→天明). Eyeball, then lock real names into the glossary.
+      (e.g. Avalon→阿瓦隆) alongside names transliterated everywhere
+      (e.g. Tamsin→塔姆辛). Eyeball, then lock real names into the glossary.
 
     Per occurrence and across status 1 + 2.
     """
@@ -119,7 +121,7 @@ def discover_proper_nouns(items, locked=None):
                 continue
             seen.add(w)
             lw = w.lower()
-            if lw in known or lw in _STOP or w.endswith("'s") or w.endswith("’s"):
+            if lw in known or lw in _STOP or w.endswith("'s") or w.endswith("’s") or _CONTRACTION.match(w):
                 continue
             if latin_boundary_search(w, tgt):
                 preserved[w] = preserved.get(w, 0) + 1
@@ -137,8 +139,8 @@ def discover_proper_nouns(items, locked=None):
 def find_untranslated_terms(items, locked):
     """The inverse of name-preservation: a glossary term that HAS a target-language
     translation (`dst`, not `keep_source`) but whose English `src` was left
-    verbatim in the translation of some segments (e.g. Starfleet→星际舰队 applied
-    everywhere except a few spots where "Starfleet" leaked through untranslated).
+    verbatim in the translation of some segments (e.g. Coastguard→海岸警卫队 applied
+    everywhere except a few spots where "Coastguard" leaked through untranslated).
 
     Returns [{src, dst, count, segments}], status 1 + 2, per occurrence.
     """
@@ -176,7 +178,7 @@ def find_stray_latin(items, locked=None, min_len=2):
     Per segment, case-insensitive: a token is flagged when it is not a word in
     that segment's source. This is the only test that actually catches the
     target class — a wrong-name/garbage token written where the source has
-    something else (``Vic``/``Sam``/``Sef`` in a passage about Bashir; ``Lt``
+    something else (``Vic``/``Sam``/``Sef`` in a passage about Okafor; ``Lt``
     for "the guard") — because such tokens collide with real source words under
     looser tests (``same`` ⊃ ``sam``), so substring/book-wide whitelists wrongly
     swallow them.
@@ -231,24 +233,81 @@ def find_merged_tokens(items, min_len=14):
     return out
 
 
+_TAGS = re.compile(r"</?[ib]>")
+_LOWER = re.compile(r"(?<![A-Za-z'’-])[a-z][a-z-]{4,}(?![A-Za-z'’])")
+
+
+def find_pending_terms(items, locked=None, min_count=3):
+    """Before translating the rest of a book: words that recur in the still-UNTRANSLATED source
+    but never occur in the already-translated part and are not in the glossary — the new
+    creatures/devices/titles the next chapters coin (lowercase ones too, e.g. "skimmers").
+    Settle these in the glossary BEFORE splitting into parallel groups, or each group invents
+    its own rendering. Returns [{token, count, segments}] ranked by count."""
+    known = _glossary_known(locked)
+    done, pend = set(), {}
+    for it in items:
+        src = normalize_apostrophes(it.get("source_text") or "")
+        st = it.get("translation_status")
+        toks = {m.group().lower() for m in _LOWER.finditer(src)} | \
+               {m.group().lower() for m in _WORD.finditer(src) if m.group()[0].isupper()}
+        if st in CHECKED_STATUSES:
+            done |= toks
+        elif st == 0:
+            for t in toks:
+                pend.setdefault(t, []).append(it["text_index"])
+    merged: dict[str, list[int]] = {}
+    for t, idx in pend.items():          # skimmer + skimmers -> one row
+        base = t[:-1] if t.endswith("s") and t[:-1] in pend else t
+        merged.setdefault(base, []).extend(idx)
+    out = []
+    for t, idx in merged.items():
+        idx = sorted(set(idx))
+        if len(idx) < min_count or {t, t + "s"} & (done | known | _STOP):
+            continue
+        # a coined term clusters where its creature/device appears; ordinary vocabulary is spread out
+        spread = len({i // 50 for i in idx})
+        out.append({"token": t, "count": len(idx), "burst": round(len(idx) / spread, 2), "segments": idx[:12]})
+    out.sort(key=lambda r: (-(r["count"] * r["burst"]), r["token"]))
+    return out
+
+
 def _items(cache_path):
     from . import cache_io
 
     proj = cache_io.load_cache(cache_path)
-    return [{"text_index": it.text_index, "source_text": it.source_text,
-             "translated_text": it.translated_text, "translation_status": it.translation_status}
+    # markup is irrelevant here and splits words: a drop cap "<b>O</b>ssa" must read "Ossa"
+    return [{"text_index": it.text_index, "source_text": _TAGS.sub("", it.source_text or ""),
+             "translated_text": _TAGS.sub("", it.translated_text or ""), "translation_status": it.translation_status}
             for it in cache_io.iter_items(proj)]
+
+
+def _brief(name, rows, n=15):
+    lines = [f"## {name}: {len(rows)}"]
+    for r in rows[:n]:
+        key = r.get("token") or r.get("src")
+        extra = f" -> {r['dst']}" if r.get("dst") else ""
+        extra += f" (kept {r['preserved']}x)" if r.get("preserved") else ""
+        lines.append(f"  {key}{extra}  x{r.get('count', r.get('missing'))}  {r['segments'][:8]}")
+    if len(rows) > n:
+        lines.append(f"  … {len(rows) - n} more")
+    return "\n".join(lines)
 
 
 def main(argv=None):
     import argparse
     import json
+    import sys
 
     ap = argparse.ArgumentParser(description="Discover glossary gaps / parse artifacts (complements verify)")
     ap.add_argument("cache")
-    ap.add_argument("--locked", help="locked glossary JSON (needed for --mode discover/terms)")
-    ap.add_argument("--mode", choices=["discover", "terms", "strays", "merges", "all"], default="all")
-    ap.add_argument("--min-merge-len", type=int, default=13)
+    ap.add_argument("--locked", help="locked glossary JSON (needed for --mode discover/terms/pending)")
+    ap.add_argument("--mode", choices=["discover", "terms", "strays", "merges", "pending", "all"], default="all",
+                    help="all = discover+terms+strays+merges; pending = new terms in the untranslated part")
+    ap.add_argument("--min-merge-len", type=int, default=18)
+    ap.add_argument("--min-count", type=int, default=3, help="pending: minimum occurrences")
+    ap.add_argument("--json", action="store_true", help="stdout = full result as pure JSON")
+    ap.add_argument("--out", help="also write the full result JSON here")
+    ap.add_argument("--top", type=int, default=15, help="rows per section in the brief listing")
     a = ap.parse_args(argv)
     items = _items(a.cache)
     locked = None
@@ -256,22 +315,30 @@ def main(argv=None):
         with open(a.locked, encoding="utf-8") as f:
             locked = json.load(f)
     result = {}
-    summary = []
     if a.mode in ("discover", "all"):
-        d = discover_proper_nouns(items, locked)
-        result["discover"] = d
-        summary.append(f"inconsistent: {len(d['inconsistent'])}, never_preserved: {len(d['never_preserved'])}")
+        result["discover"] = discover_proper_nouns(items, locked)
     if a.mode in ("terms", "all"):
         result["untranslated_terms"] = find_untranslated_terms(items, locked)
-        summary.append(f"untranslated_terms: {len(result['untranslated_terms'])}")
     if a.mode in ("strays", "all"):
         result["stray_latin"] = find_stray_latin(items, locked)
-        summary.append(f"stray_latin: {len(result['stray_latin'])}")
     if a.mode in ("merges", "all"):
         result["merges"] = find_merged_tokens(items, a.min_merge_len)
-        summary.append(f"merges: {len(result['merges'])}")
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    print("\n" + "; ".join(summary))
+    if a.mode == "pending":
+        result["pending_terms"] = find_pending_terms(items, locked, a.min_count)
+    if a.out:
+        with open(a.out, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=1)
+    flat = {}
+    for k, v in result.items():
+        if isinstance(v, dict):
+            flat.update({f"{k}.{kk}": vv for kk, vv in v.items()})
+        else:
+            flat[k] = v
+    if a.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print("\n".join(_brief(k, v, a.top) for k, v in flat.items()))
+    sys.stderr.write("; ".join(f"{k}: {len(v)}" for k, v in flat.items()) + "\n")
 
 
 if __name__ == "__main__":

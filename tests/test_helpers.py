@@ -7,7 +7,7 @@ def test_normalize_apostrophes_folds_curly_and_modifier():
     assert normalize_apostrophes("Vikr＇l") == "Vikr'l"
 
 def test_latin_boundary_search_matches_in_cjk_context():
-    assert latin_boundary_search("Bashir", "Julian·Bashir早已见惯") is not None
+    assert latin_boundary_search("Okafor", "Julian·Okafor早已见惯") is not None
     # must NOT match inside a larger latin word
     assert latin_boundary_search("Ro", "Korin") is None
 

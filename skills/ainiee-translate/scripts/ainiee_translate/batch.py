@@ -9,6 +9,11 @@
   validate                 check one group's output against its source BEFORE writing
   write                    gate + write one or many translation files (JSON or JSONL)
                            in a single lock/backup/load/save
+  apply                    the one write path for fixes: rows with translated_text / polished_text
+                           / patches [[old, new]…]; keeps each segment's status (no downgrade);
+                           --source records provenance (and protects meaning fixes from later passes)
+  bundle                   one compact file per group (rule card + glossary TSV + context + source),
+                           so a subagent reads once and writes once
 """
 import argparse
 import json
@@ -16,7 +21,7 @@ import math
 import os
 from collections import Counter
 
-from . import cache_io, audit
+from . import cache_io, audit, state
 from ._vendor.ModuleFolders.Service.Cache.CacheItem import TranslationStatus
 
 
@@ -77,9 +82,14 @@ def row_text(r: dict) -> str:
     return r["polished_text"] if "polished_text" in r else r.get("translated_text", "")
 
 
-def make_check(allow_tag_mismatch: bool = False):
+def make_check(allow_tag_mismatch: bool = False, cache_path: str | None = None):
+    """Write gate. With `cache_path`, decisions.json next to it adds per-segment tag exceptions
+    and the book's lint rules (soft)."""
+    d = state.load(cache_path)
+    exc, rules = state.tag_exceptions(d), state.lint_rules(d)
+
     def check(item, text):
-        return audit.lint_pair(item.source_text, text, allow_tag_mismatch)
+        return audit.lint_pair(item.source_text, text, allow_tag_mismatch or item.text_index in exc, rules)
     return check
 
 
@@ -87,7 +97,19 @@ def write_back(cache_path: str, translations: list[dict], *, force: bool = False
                allow_tag_mismatch: bool = False) -> cache_io.WriteResult:
     return cache_io.apply_writeback(cache_path, translations, TranslationStatus.TRANSLATED,
                                     lambda t: t.get("translated_text", ""),
-                                    check=make_check(allow_tag_mismatch), force=force)
+                                    check=make_check(allow_tag_mismatch, cache_path), force=force)
+
+
+def apply_rows(cache_path: str, rows: list[dict], *, source: str | None = None, reason: str | None = None,
+               force: bool = False, allow_tag_mismatch: bool = False) -> cache_io.WriteResult:
+    """Unified fix write: text from translated_text / polished_text / patches, status kept.
+    A row may carry its own `reason`; `source` (e.g. dual, codex, adversarial, user) goes to provenance."""
+    res = cache_io.apply_writeback(cache_path, rows, None, row_text,
+                                   check=make_check(allow_tag_mismatch, cache_path), force=force)
+    if source:
+        why = {int(r["text_index"]): r.get("reason") or reason for r in rows}
+        state.record(cache_path, [{**c, "source": source, "reason": why.get(c["text_index"])} for c in res.changes])
+    return res
 
 
 def report_write(res: cache_io.WriteResult, verb: str = "applied") -> None:
@@ -183,9 +205,18 @@ def parse_range(s: str | None) -> tuple[int, int] | None:
     return lo, hi
 
 
+def changed_indexes(project, baseline_path: str) -> set[int]:
+    """Segments whose translation differs from an older cache (re-review only what changed)."""
+    old = {it.text_index: it.translated_text or "" for it in cache_io.iter_items(cache_io.load_cache(baseline_path))}
+    return {it.text_index for it in cache_io.iter_items(project) if (it.translated_text or "") != old.get(it.text_index, "")}
+
+
 def split_project(project, target: int, out_dir: str | None, context: int, stage: str = "translate",
-                  index_range: tuple[int, int] | None = None, prefix: str = "") -> dict:
-    keep = (lambda it: index_range[0] <= it.text_index <= index_range[1]) if index_range else None
+                  index_range: tuple[int, int] | None = None, prefix: str = "",
+                  only: set[int] | None = None) -> dict:
+    def keep(it):
+        return ((not index_range or index_range[0] <= it.text_index <= index_range[1])
+                and (only is None or it.text_index in only))
     groups = plan_groups(project, target, STAGE_STATUS[stage], keep)
     all_items = list(cache_io.iter_items(project))
     pos = {it.text_index: i for i, it in enumerate(all_items)}
@@ -230,7 +261,8 @@ def split_project(project, target: int, out_dir: str | None, context: int, stage
 
 
 # ------------------------------------------------------------ validate ----
-def validate(src_rows: list[dict], trans_rows: list[dict], allow_tag_mismatch: bool = False) -> dict:
+def validate(src_rows: list[dict], trans_rows: list[dict], allow_tag_mismatch: bool = False,
+             cache_path: str | None = None) -> dict:
     src_idx = [int(r["text_index"]) for r in src_rows]
     tr_idx = [int(r["text_index"]) for r in trans_rows]
     src_by = {int(r["text_index"]): r.get("source_text") or "" for r in src_rows}
@@ -245,11 +277,13 @@ def validate(src_rows: list[dict], trans_rows: list[dict], allow_tag_mismatch: b
     if dups:
         hard.append({"kind": "duplicate_index", "count": len(dups), "indexes": dups[:50]})
     seg_hard, soft = [], {}
+    d = state.load(cache_path)
+    exc, rules = state.tag_exceptions(d), state.lint_rules(d)
     for r in trans_rows:
         ti = int(r["text_index"])
         if ti not in src_by:
             continue
-        h, s = audit.lint_pair(src_by[ti], row_text(r), allow_tag_mismatch)
+        h, s = audit.lint_pair(src_by[ti], row_text(r), allow_tag_mismatch or ti in exc, rules)
         if h:
             seg_hard.append({"text_index": ti, "reasons": h})
         for c in s:
@@ -262,6 +296,80 @@ def validate(src_rows: list[dict], trans_rows: list[dict], allow_tag_mismatch: b
             "order_preserved": order_ok, "hard": hard,
             "warnings": {k: {"count": len(v), "segments": v[:20]} for k, v in
                          sorted(soft.items(), key=lambda kv: -len(kv[1]))}}
+
+
+# -------------------------------------------------------------- bundle ----
+def glossary_tsv(locked: dict) -> str:
+    """Compact glossary for a prompt: `src<TAB>dst` (dst `=` = keep the source verbatim)."""
+    L = []
+    for c in locked.get("characters", []):
+        names = [c.get("render", "")] + list(c.get("aliases") or [])
+        n = [x for x in dict.fromkeys(names) if x]
+        if n:
+            L.append(f"{n[0]}\t=" + (f"\t(also: {', '.join(n[1:])})" if len(n) > 1 else ""))
+    for t in locked.get("terms", []):
+        if not t.get("src"):
+            continue
+        dst = "=" if t.get("keep_source") or not t.get("dst") else t["dst"]
+        L.append(f"{t['src']}\t{dst}")
+    return "\n".join(L)
+
+
+def make_bundle(cache_path: str, src_json: str, out_md: str, *, stage: str = "translate",
+                locked_path: str | None = None, includes=(), ctx_json: str | None = None,
+                out_file: str | None = None, newterms_file: str | None = None) -> dict:
+    """One file a subagent reads once: task + output contract, rule card, included rules,
+    glossary slice (TSV), context, and the rows to work on (JSON lines, markup intact)."""
+    from .glossary import filter_locked
+    rows = load_translations(src_json)
+    idx = [int(r["text_index"]) for r in rows]
+    parts = [f"# {stage} bundle — {os.path.basename(src_json)} ({len(rows)} segments, {min(idx)}–{max(idx)})", ""]
+    if stage == "review":
+        parts += ["## 交付（一次写完）",
+                  "- 逐段对照原文审译文：误译（否定/指代/主被动/数量/语气方向）、漏增译、称谓、术语、中文质量、标点、正典事实。",
+                  "- 用一次 Write 写到 prompt 指定的文件，每个问题一行 JSON："
+                  "`{\"i\": 段号, \"cat\": \"误译|漏增译|称谓|术语|中文|标点|事实\", \"sev\": 1-3, "
+                  "\"issue\": \"一句话（引原文片段）\", \"fix\": \"只改出问题的那部分\"}`；sev 3 = 读者会误解剧情/人物。",
+                  "- 规则卡里的已定口径、原文笔误、已修过的语义不要报；两可的措辞偏好不要报。",
+                  "- 最终消息只回：各类计数、sev≥2 条数、最严重 5 条（段号+一句话）。", ""]
+    elif out_file:
+        key = "polished_text" if stage == "polish" else "translated_text"
+        parts += ["## 交付（一次写完）",
+                  f"- 用一次 Write 把全部结果写到 `{out_file}`：每行一个 JSON "
+                  f"`{{\"text_index\": N, \"{key}\": \"…\"}}`，段数、顺序与下面一致，<i>/<b> 成对保留。",
+                  "- 写完不要再读回、不要跑校验——主控会校验。"]
+        if newterms_file:
+            parts.append(f"- 表外新词（词汇表里没有、你自定译法或保留原文的专名/术语/新物种）写到 `{newterms_file}`，"
+                         "每行 `原文<TAB>译法`（保留原文就写 `原文<TAB>原文`）。")
+        parts += ["- 最终消息只回：段数、新词数、拿不准的 ≤5 条（段号+一句话）。", ""]
+    c = state.card(cache_path, min(idx), max(idx))
+    if c:
+        parts += [c]
+    for p in includes:
+        with open(p, encoding="utf-8") as f:
+            parts += [f"## {os.path.basename(p)}", f.read().strip(), ""]
+    if locked_path and os.path.exists(locked_path):
+        with open(locked_path, encoding="utf-8") as f:
+            sub = filter_locked(json.load(f), [r.get("source_text") or "" for r in rows])
+        g = glossary_tsv(sub)
+        if g:
+            parts += ["## 词汇表（原文<TAB>译法；= 表示保留原文）", "```", g, "```", ""]
+    if ctx_json and os.path.exists(ctx_json):
+        with open(ctx_json, encoding="utf-8") as f:
+            ctx = json.load(f)
+        if ctx:
+            parts += ["## 前文（只读，对齐语气用）", "```"]
+            parts += [json.dumps({"i": r["text_index"], "zh": r.get("translated_text") or ""}, ensure_ascii=False)
+                      for r in ctx]
+            parts += ["```", ""]
+    parts += ["## 待处理段（JSON lines）", "```"]
+    keys = ("text_index", "source_text", "translated_text")
+    parts += [json.dumps({k: r[k] for k in keys if k in r}, ensure_ascii=False) for r in rows]
+    parts += ["```", ""]
+    txt = "\n".join(parts)
+    with open(out_md, "w", encoding="utf-8") as f:
+        f.write(txt)
+    return {"bundle": out_md, "segments": len(rows), "chars": len(txt)}
 
 
 # ------------------------------------------------------------------ CLI ----
@@ -288,11 +396,14 @@ def main(argv=None):
                          "translated_text; review: TRANSLATED+POLISHED segments for an adversarial review pass")
     sp.add_argument("--range", metavar="A-B", help="only text_index A..B (review/polish of a slice of the book)")
     sp.add_argument("--prefix", default="", help="group id prefix: grp_<prefix><n>_src.json (e.g. g, b)")
+    sp.add_argument("--changed-since", metavar="OLD_CACHE",
+                    help="only segments whose translation differs from this older cache (re-review a pass's edits)")
 
     v = sub.add_parser("validate", help="Check a group's translation file against its source file")
     v.add_argument("src_json")
     v.add_argument("trans_json")
     v.add_argument("--allow-tag-mismatch", action="store_true")
+    v.add_argument("--cache", help="project cache: apply its decisions.json (tag exceptions, lint rules)")
 
     w = sub.add_parser("write", help="Gate + write one or more translation files (JSON/JSONL)")
     w.add_argument("cache_path")
@@ -302,7 +413,49 @@ def main(argv=None):
     w.add_argument("--allow-tag-mismatch", action="store_true",
                    help="do not reject segments whose <i>/<b> counts differ from the source")
 
+    ay = sub.add_parser("apply", help="Write fixes (translated_text / polished_text / patches), keeping each status")
+    ay.add_argument("cache_path")
+    ay.add_argument("files", nargs="+", metavar="FIX_JSON")
+    ay.add_argument("--source", help="provenance label: dual / codex / adversarial / user / editor …")
+    ay.add_argument("--reason", help="default reason for rows without one")
+    ay.add_argument("--force", action="store_true")
+    ay.add_argument("--allow-tag-mismatch", action="store_true")
+
+    bd = sub.add_parser("bundle", help="One read-once file per group for a subagent")
+    bd.add_argument("cache_path")
+    bd.add_argument("src_json", nargs="+", help="grp_N_src.json files")
+    bd.add_argument("--stage", choices=["translate", "polish", "review"], default="translate")
+    bd.add_argument("--locked", help="glossary.locked.json (default <cache dir>/glossary.locked.json)")
+    bd.add_argument("--include", nargs="*", default=[], metavar="MD", help="rule files to inline (user_prompt, lessons…)")
+    bd.add_argument("--out-dir", help="default: next to each src file")
+
     a = ap.parse_args(argv)
+    if a.cmd == "apply":
+        try:
+            rows = load_many(a.files)
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            ap.error(f"cannot read fix file: {e}")
+        dups = duplicates(rows)
+        if dups and not a.force:
+            ap.error(f"duplicate text_index across inputs: {dups[:20]} (merge them, or --force: last wins)")
+        res = apply_rows(a.cache_path, rows, source=a.source, reason=a.reason, force=a.force,
+                         allow_tag_mismatch=a.allow_tag_mismatch)
+        report_write(res)
+        print(f"  changed {len(res.changes)} segment(s)" + (f"; provenance: {a.source}" if a.source else ""))
+        return 1 if res.rejected else 0
+    if a.cmd == "bundle":
+        locked = a.locked or os.path.join(os.path.dirname(os.path.abspath(a.cache_path)), "glossary.locked.json")
+        for src in a.src_json:
+            d = a.out_dir or os.path.dirname(os.path.abspath(src))
+            gid = os.path.basename(src).removeprefix("grp_").removesuffix("_src.json")
+            ctx = os.path.join(os.path.dirname(os.path.abspath(src)), f"grp_{gid}_ctx.json")
+            outf = None if a.stage == "review" else \
+                os.path.join(d, f"{'trans' if a.stage == 'translate' else 'polished'}_{gid}.jsonl")
+            r = make_bundle(a.cache_path, src, os.path.join(d, f"bundle_{gid}.md"), stage=a.stage,
+                            locked_path=locked, includes=a.include, ctx_json=ctx, out_file=outf,
+                            newterms_file=os.path.join(d, f"newterms_{gid}.txt") if a.stage == "translate" else None)
+            print(f"[{gid}] {r['segments']} segs, {r['chars']} chars -> {r['bundle']}")
+        return 0
     if a.cmd == "read":
         project = cache_io.load_cache(a.cache_path)
         print(json.dumps(read_batch(project, size=a.size), ensure_ascii=False))
@@ -315,7 +468,8 @@ def main(argv=None):
             rng = parse_range(a.range)
         except ValueError as e:
             ap.error(str(e))
-        print(json.dumps(split_project(project, a.target, a.out_dir, a.context, a.stage, rng, a.prefix),
+        only = changed_indexes(project, a.changed_since) if a.changed_since else None
+        print(json.dumps(split_project(project, a.target, a.out_dir, a.context, a.stage, rng, a.prefix, only),
                          ensure_ascii=False, indent=1))
     elif a.cmd == "validate":
         try:
@@ -323,7 +477,7 @@ def main(argv=None):
             tr = load_translations(a.trans_json)
         except (OSError, ValueError, json.JSONDecodeError) as e:
             ap.error(f"cannot read input: {e}")
-        rep = validate(src, tr, a.allow_tag_mismatch)
+        rep = validate(src, tr, a.allow_tag_mismatch, a.cache)
         print(json.dumps(rep, ensure_ascii=False, indent=1))
         return 0 if rep["ok"] else 1
     elif a.cmd == "write":

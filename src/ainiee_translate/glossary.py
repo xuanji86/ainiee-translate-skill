@@ -4,10 +4,14 @@
   filter         subset of a locked table that actually occurs in given source files
                  (what a parallel subagent needs to read: ~10% of the table, not 66 KB)
   lint           structural problems that cause verify false positives / merged people
-  merge-newterms fold the newterms_N.txt files parallel agents emit into the table
+  merge-newterms fold the newterms_N.txt files parallel agents emit into the table;
+                 a line is `src` (kept verbatim) or `src<TAB>dst` / `src => dst` (the rendering
+                 the group chose). Groups that rendered one src differently are a CONFLICT:
+                 listed, not merged — settle them before writing the groups back.
 """
 import argparse
 import json
+import os
 import re
 import sys
 
@@ -93,7 +97,7 @@ def lint_locked(locked: dict) -> list[dict]:
     owner: dict[str, str] = {}
     term_srcs = {normalize_apostrophes(t.get("src") or "").lower() for t in terms}
     # A leading token that prefixes the bare name of >= 2 different people is a title,
-    # not a given name ("Vedek Capril" / "Vedek Yevir"); so is one that is itself a term.
+    # not a given name ("Prior Aldous" / "Prior Benedek"); so is one that is itself a term.
     lead_count: dict[str, set] = {}
     for c in chars:
         canon_l = normalize_apostrophes(c.get("canonical") or "").lower()
@@ -156,24 +160,50 @@ def _known(locked: dict) -> set[str]:
     return _glossary_known(locked)
 
 
-def merge_newterms(locked: dict, names: list[str], category: str = "new") -> tuple[list[str], list[str]]:
-    """Add each new name as a keep_source term unless already known (any
-    character name/alias or term src, apostrophe- and case-insensitive)."""
+def parse_newterm(line: str) -> tuple[str, str] | None:
+    """`src`, `src<TAB>dst` or `src => dst` -> (src, dst); dst == src means kept verbatim."""
+    line = line.strip().strip(",;")
+    if not line or line.startswith("#"):
+        return None
+    if "\t" in line:
+        src, dst = line.split("\t", 1)
+    elif "=>" in line:
+        src, dst = line.split("=>", 1)
+    else:
+        src, dst = line, line
+    src, dst = src.strip(), dst.strip() or src.strip()
+    return (src, dst) if src else None
+
+
+def newterm_conflicts(per_file: dict[str, list[tuple[str, str]]]) -> dict[str, dict[str, list[str]]]:
+    """src -> {dst: [files…]} for every src that two groups rendered differently."""
+    seen: dict[str, dict[str, list[str]]] = {}
+    for f, pairs in per_file.items():
+        for src, dst in pairs:
+            seen.setdefault(normalize_apostrophes(src).lower(), {}).setdefault(dst, []).append(f)
+    return {k: v for k, v in seen.items() if len(v) > 1}
+
+
+def merge_newterms(locked: dict, names: list, category: str = "new") -> tuple[list[str], list[str]]:
+    """Add each new term unless already known (any character name/alias or term src,
+    apostrophe- and case-insensitive). `names`: plain strings (kept verbatim) or (src, dst) pairs."""
     known = _known(locked)
     added, skipped = [], []
     for raw in names:
-        n = raw.strip().strip(",;")
-        if not n or n.startswith("#"):
+        pair = parse_newterm(raw) if isinstance(raw, str) else tuple(raw)
+        if not pair:
             continue
-        k = normalize_apostrophes(n).lower()
+        src, dst = pair
+        k = normalize_apostrophes(src).lower()
         if k in known:
-            skipped.append(n)
+            skipped.append(src)
             continue
         known.add(k)
+        keep = normalize_apostrophes(dst) == normalize_apostrophes(src)
         locked.setdefault("terms", []).append(
-            {"src": n, "dst": n, "keep_source": True, "category": category,
-             "note": "auto: kept verbatim by a parallel agent; review"})
-        added.append(n)
+            {"src": src, "dst": dst, "keep_source": keep, "category": category,
+             "note": "auto: " + ("kept verbatim" if keep else "rendering chosen") + " by a parallel agent; review"})
+        added.append(src if keep else f"{src} -> {dst}")
     return added, skipped
 
 
@@ -218,16 +248,22 @@ def main(argv=None):
     elif a.cmd == "lint":
         issues = lint_locked(load_locked(a.locked))
         print(json.dumps(issues, ensure_ascii=False, indent=1))
-        print(f"\n{len(issues)} issue(s)")
+        sys.stderr.write(f"{len(issues)} issue(s)\n")
         return 1 if issues else 0
     elif a.cmd == "merge-newterms":
         locked = load_locked(a.locked)
-        names = []
+        per_file = {}
         for p in a.files:
             with open(p, encoding="utf-8") as fh:
-                names.extend(fh.read().splitlines())
-        added, skipped = merge_newterms(locked, names, a.category)
-        print(f"new: {len(added)}  already known: {len(skipped)}")
+                per_file[p] = [x for x in (parse_newterm(l) for l in fh.read().splitlines()) if x]
+        conflicts = newterm_conflicts(per_file)
+        for k, v in conflicts.items():
+            print(f"CONFLICT {k}: " + "; ".join(f"{d} ({', '.join(os.path.basename(f) for f in fs)})"
+                                               for d, fs in v.items()))
+        pairs = [p for ps in per_file.values() for p in ps
+                 if normalize_apostrophes(p[0]).lower() not in conflicts]
+        added, skipped = merge_newterms(locked, pairs, a.category)
+        print(f"new: {len(added)}  already known: {len(skipped)}  conflicts (not merged): {len(conflicts)}")
         for n in added:
             print(f"  + {n}")
         if a.apply:

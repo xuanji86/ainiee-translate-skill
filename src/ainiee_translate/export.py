@@ -41,14 +41,30 @@ def _export_via_ainiee(project, output_path, input_path, config) -> None:
 
 
 def main(argv=None):
+    import json
     ap = argparse.ArgumentParser(description="Export cache.json -> output files")
     ap.add_argument("--cache", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument("--input", required=True)
+    ap.add_argument("--finalize", action="store_true",
+                    help="epub: target-language metadata, fixed identifier, link/anchor/paragraph checks "
+                         "(settings in work/export.json; see finalize.py)")
+    ap.add_argument("--title")
+    ap.add_argument("--name", help="deliverable file name (no extension); default: <source>_translated")
+    ap.add_argument("--deliver", help="also copy the finalized epub here (e.g. the CHN folder)")
     a = ap.parse_args(argv)
     proj = cache_io.load_cache(a.cache)
     export_project(proj, a.output, a.input)
     print(f"exported -> {a.output}")
+    if a.finalize:
+        from . import finalize
+        stem = Path(a.input).stem
+        raw = os.path.join(a.output, f"{stem}{DEFAULT_CONFIG['translated_suffix']}.epub")
+        if not os.path.exists(raw):
+            ap.error(f"--finalize: no exported epub at {raw}")
+        cfg = finalize.load_config(a.cache, {"title": a.title, "name": a.name, "deliver": a.deliver})
+        out = os.path.join(a.output, f"{cfg['name']}.epub") if cfg.get("name") else raw
+        print(json.dumps(finalize.finalize(raw, out, a.cache, cfg), ensure_ascii=False))
 
 
 if __name__ == "__main__":

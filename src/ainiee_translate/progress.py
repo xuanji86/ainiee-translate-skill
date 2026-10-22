@@ -203,7 +203,7 @@ def _save_state(snap: dict):
 
 # ---------------------------------------------------------------- line ----
 def _short_name(snap: dict) -> str:
-    name = re.sub(r"^Star Trek[_:]?\s*", "", snap["project"] or "").split(":")[0].strip() or "book"
+    name = re.split(r"_\s+|:\s+", snap["project"] or "", maxsplit=1)[-1].strip() or "book"   # "Series_ Title" / "Series: Title" -> "Title"
     return re.sub(r"^[A-Za-z ]+_\s*", "", name)[:24]
 
 

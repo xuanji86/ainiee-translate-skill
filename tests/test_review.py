@@ -7,8 +7,8 @@ def _rules(**cfg):
     return review.Rules(cfg, cfg.pop("_glossary", []))
 
 
-SEG = {"text_index": 1, "source_text": "The <i>Euphrates</i> ran. Kira said so.",
-       "translated_text": "<i>Euphrates</i> 号跑了。Kira 上校这么说的。他也这么说的。"}
+SEG = {"text_index": 1, "source_text": "The <i>Meridian</i> ran. Mara said so.",
+       "translated_text": "<i>Meridian</i> 号跑了。Mara 上校这么说的。他也这么说的。"}
 
 
 def _f(off, prop, cat="B", **kw):
@@ -24,23 +24,23 @@ def test_check_offending_must_occur_once():
 
 def test_check_redline_change_forbidden_mention_allowed():
     r = _rules(redline=[r"上校|舰长"])
-    assert review.check(_f("Kira 上校这么说的", "Kira 舰长这么说的"), SEG, r)[1] == "E_redline"
-    assert review.check(_f("Kira 上校这么说的", "Kira 上校是这么说的"), SEG, r)[0]
+    assert review.check(_f("Mara 上校这么说的", "Mara 舰长这么说的"), SEG, r)[1] == "E_redline"
+    assert review.check(_f("Mara 上校这么说的", "Mara 上校是这么说的"), SEG, r)[0]
 
 
 def test_check_settled_may_be_added_not_removed():
     r = _rules(settled=["号"], _glossary=["上校"])
-    assert review.check(_f("<i>Euphrates</i> 号跑了", "<i>Euphrates</i> 跑了"), SEG, r)[1] == "E_settled_removed"
-    assert review.check(_f("Kira 上校这么说的", "Kira 这么说的"), SEG, r)[1] == "E_settled_removed"   # glossary dst
+    assert review.check(_f("<i>Meridian</i> 号跑了", "<i>Meridian</i> 跑了"), SEG, r)[1] == "E_settled_removed"
+    assert review.check(_f("Mara 上校这么说的", "Mara 这么说的"), SEG, r)[1] == "E_settled_removed"   # glossary dst
     assert review.check(_f("他也这么说的", "他这位上校也这么说的"), SEG, r)[0]                       # adding is fine
 
 
 def test_check_tags_latin_and_forbidden_chars():
     r = _rules()
-    assert review.check(_f("<i>Euphrates</i> 号", "Euphrates 号"), SEG, r)[1] == "tag:tag_mismatch"
-    assert review.check(_f("Kira 上校", "Nerys 上校"), SEG, r)[1] == "name_touch"
-    assert review.check(_f("Kira 上校", "Kira Nerys 上校", cat="A", latin_change=True), SEG, r)[0]
-    assert review.check(_f("Kira 上校", "Kira Nerys 上校", cat="C", latin_change=True), SEG, r)[1] == "name_touch"
+    assert review.check(_f("<i>Meridian</i> 号", "Meridian 号"), SEG, r)[1] == "tag:tag_mismatch"
+    assert review.check(_f("Mara 上校", "Venn 上校"), SEG, r)[1] == "name_touch"
+    assert review.check(_f("Mara 上校", "Mara Venn 上校", cat="A", latin_change=True), SEG, r)[0]
+    assert review.check(_f("Mara 上校", "Mara Venn 上校", cat="C", latin_change=True), SEG, r)[1] == "name_touch"
     assert review.check(_f("他也这么说的", "他也「这么」说的"), SEG, r)[1] == "forbid_char"
     assert review.check(_f("他也这么说的", "他也这么说的,"), SEG, r)[1] == "soft:halfwidth_punct"
     assert review.check({"id": "x", "text_index": 1, "category": "E", "offending": "a", "proposed": "b"}, SEG, r)[1] == "bad_category"
@@ -134,12 +134,12 @@ def test_load_rules_reads_config_and_glossary(tmp_path, make_project):
     paths = review.Paths(cache)
     os.makedirs(paths.dir)
     json.dump({"redline": ["上校"], "forbid": ""}, open(paths.f("config.json"), "w"))
-    json.dump({"terms": [{"src": "phaser", "dst": "相位枪"}, {"src": "Ops", "dst": "", "keep_source": True}]},
+    json.dump({"terms": [{"src": "musket", "dst": "火枪"}, {"src": "Ops", "dst": "", "keep_source": True}]},
               open(os.path.join(os.path.dirname(cache), "glossary.locked.json"), "w"))
     r = review.load_rules(paths)
-    assert r.violation("Kira 上校", "Kira 舰长") == "E_redline"
-    assert r.violation("那把相位枪", "那把相位枪，沉甸甸的") == ""   # term kept
-    assert r.violation("那把相位枪", "那把枪") == "E_settled_removed"
+    assert r.violation("Mara 上校", "Mara 舰长") == "E_redline"
+    assert r.violation("那把火枪", "那把火枪，沉甸甸的") == ""   # term kept
+    assert r.violation("那把火枪", "那把枪") == "E_settled_removed"
     assert r.violation("a", "「a」") == ""                    # forbid disabled by config
 
 
@@ -175,11 +175,11 @@ def test_blind_and_hints(tmp_path, make_project):
 
 def test_redline_waivable_entry():
     r = _rules(redline=[{"re": r"上校|舰长", "waivable": True}, "号"])
-    f = _f("Kira 上校这么说的", "Kira 舰长这么说的", cat="D")
+    f = _f("Mara 上校这么说的", "Mara 舰长这么说的", cat="D")
     assert review.check(f, SEG, r)[1] == "E_redline"                                  # no waiver -> still a redline
     assert review.check(dict(f, redline_waiver="source: Captain of her ship"), SEG, r)[0]
     # a non-waivable entry stays hard even with a waiver
-    assert review.check(_f("<i>Euphrates</i> 号跑了", "<i>Euphrates</i> 跑了", redline_waiver="x"), SEG, r)[1] == "E_redline"
+    assert review.check(_f("<i>Meridian</i> 号跑了", "<i>Meridian</i> 跑了", redline_waiver="x"), SEG, r)[1] == "E_redline"
 
 
 def test_needs_challenge_tiers():

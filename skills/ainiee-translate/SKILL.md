@@ -20,6 +20,24 @@ parse → 构建锁定词汇表 → 逐章翻译（agent 按规则） → 写回
 
 本技能自带管道脚本（`scripts/ainiee_translate/`），无需单独 `pip install` 本包；只需一个装了几个轻量库的 Python venv（见下）。
 
+### 推荐流程与模型（出版级，两本书实测）
+
+| 阶段 | 做法 | 依据 |
+|---|---|---|
+| 翻译 | Opus 或 Fable 按章并行（`batch bundle` 一次读、一次写）；**正文不用 Haiku** | Haiku 问题量是 Opus 13 倍、严重问题 31 倍，并行墙钟不省、token 反多 20% |
+| 意义审 | 换一个模型族再审一遍（如 Opus 译 → Fable/GPT 审，或两者都审后 `review dual-merge`） | 单一审校必漏：两轮同族审校之后，第三方模型仍查出 3 条剧情级误译 |
+| 风格审 | 对抗性审核（步骤 7.5），C/D 类用 `review pick --min-sev 2` | 意义审之后，对抗审仍改了 230 段翻译腔 |
+| 复审 | 只审改过的段：`batch split --changed-since <审前快照>` / `cache dump --changed-since` | 全书重读的大头是没改过的段 |
+
+预算紧时顺序砍：先砍「同族第二审」，再把对抗审的盲读换成便宜模型试跑（`review stats` 看否决率）；意义审不砍。
+每个 agent 收工就 `review log --stage <阶段> --model <模型> --tokens <总 token> --segments <段数>`，`review ledger` 出每阶段 token/段，下一本书按数据删层。
+
+### 项目状态文件（`work/` 下，所有阶段共读）
+
+- **`decisions.json`**（`state` 命令维护）：`settled` 已定口径（审校闸门视为定稿、不许删）、`errata` 原文笔误、`tag_exceptions` 段级标记数例外（写回/验收/audit 都认）、`lint` 本书规则（正则命中即警告，如「巨龙…他们」）。`state card --range A-B` 出一张紧凑规则卡，`batch bundle` 和 `review rules` 自动带上。
+- **`provenance.jsonl`**：`batch apply --source codex|dual|editor|user|adversarial` 记录每段改了什么、为什么；意义修正删掉的说法，之后的审核提议若要改回去，闸门以 `E_reverts_fix` 拒收。
+- **`export.json`**：成品书名、语言、**固定的 `dc:identifier`**（首次导出生成，之后不变，阅读器里覆盖原条目而不是新增一本）、交付路径。
+
 ---
 
 ## 前置依赖与安装（重要）
@@ -97,7 +115,7 @@ mkdir -p "$WORK/work" "$WORK/out"
 
 ## 步骤 2.5：划定翻译范围（只译正文 + Historian's Note）
 
-书评、版权页、献词、题记、目录页、致谢、作者简介、出版社注册/广告页、他书试读都不译：标成排除（状态 7），agent 不会读到，导出保留原文。
+书评、版权页、献词、题记、致谢、作者简介、出版社注册/广告页、他书试读都不译：标成排除（状态 7），agent 不会读到，导出保留原文。
 
 ```bash
 <PFX> -m ainiee_translate.scope "$WORK/work/cache.json"            # 预览：每个书内文件一行 keep/DROP + 理由 + 字数
@@ -105,7 +123,9 @@ mkdir -p "$WORK/work" "$WORK/out"
 ```
 
 按每个文件的第一段判断：章号（数字 / 罗马数字 / One / Chapter…）、Part/Book/Act、Prologue/Epilogue/Interlude、Historian's Note → 保留；
-≤6 词的全大写或「月份 年份」分部/日期标题 → 保留（它们是正文结构）；目录 ncx 保留（章节标题）；其余排除。
+≤6 词的全大写或「月份 年份」分部/日期标题 → 保留（它们是正文结构）；**两份目录（ncx 与书内 Contents 页）都保留**（译完用 `cache fill-dupes --apply` 把章节标题抄过去，不必再译一遍）；
+紧跟正文文件、≥200 词的散文文件按「正文续篇」保留（防止以「NORTH WATCH CAMP, DAY 47」这类电头开头的间章正文被误排除）；紧跟「Part One」的短文件是分部副标题：标题保留，其后整段斜体的题记排除；其余排除。
+要把某段范围拉回翻译（本书例外要译题记等）：`cache set-status work/cache.json --range 38-50 --from 7 --to 0 --apply`。
 预览里判错的用 `--keep <id>` / `--drop <id>` 纠正。三本实测书的非正文只占 1–1.7% 字数——省的主要是 agent 的注意力和一批无谓的审核，不是大钱。
 
 ## 步骤 2 附：修复存量项目的行内标记与空格（`repair`）
@@ -126,8 +146,7 @@ v1.4.1 及更早版本的 epub 解析用 `soup.get_text(strip=True)` 抽文本�
 ```
 
 只改 `source_text`，不动译文与状态。补回的标记不会自动进旧译文，所以：
-`--apply` 之后跑 `--list-marked`，把列出的段用 `batch write`（已译）/
-`polish write`（已润色）重做一遍即可。
+`--apply` 之后跑 `--list-marked`，把列出的段重做后用 `batch apply`（按段保住原状态）写回即可。
 
 ---
 
@@ -297,13 +316,18 @@ v1.4.1 及更早版本的 epub 解析用 `soup.get_text(strip=True)` 抽文本�
 墙钟时间≈最慢的 agent（实测 11 章 1704 段用 7 个 agent 约 9 分钟译完）。编排的每一步都是一条命令：
 
 ```bash
+<PFX> -m ainiee_translate.scan "$WORK/work/cache.json" --locked "$WORK/work/glossary.locked.json" --mode pending   # 开译前：未译部分里反复出现、已译部分没有、表里也没有的新词（小写的新物种名也在内）→ 先定名进表
 <PFX> -m ainiee_translate.batch split "$WORK/work/cache.json" --target 300 --out-dir "$WORK/work/par" --context 20   # 按章节边界分组 → grp_N_src.json + grp_N_ctx.json（前 20 段只读上下文）
-<PFX> -m ainiee_translate.glossary filter --locked "$WORK/work/glossary.locked.json" --for "$WORK/work/par/grp_1_src.json" --out "$WORK/work/par/g_1.json"   # 每组一份只含本组出现条目的瘦身词汇表（66 KB → ~5 KB）
-#   … subagent 边译边 append par/trans_N.jsonl …
-<PFX> -m ainiee_translate.batch validate "$WORK/work/par/grp_1_src.json" "$WORK/work/par/trans_1.jsonl"   # 索引齐全/无空译/标记成对 + 风格警告；不过只重派那一组
+<PFX> -m ainiee_translate.batch bundle "$WORK/work/cache.json" "$WORK/work/par"/grp_*_src.json --include "$WORK/work/user_prompt.md"   # 每组一个 bundle_N.md：交付约定 + 规则卡 + 本组词汇表 TSV + 前文 + 原文
+#   … subagent 读一次 bundle_N.md，一次 Write 写出 trans_N.jsonl + newterms_N.txt（`原文<TAB>译法`）…
+<PFX> -m ainiee_translate.batch validate "$WORK/work/par/grp_1_src.json" "$WORK/work/par/trans_1.jsonl" --cache "$WORK/work/cache.json"   # 索引齐全/无空译/标记成对（认 decisions.json 的例外）；不过只重派那一组
+<PFX> -m ainiee_translate.glossary merge-newterms --locked "$WORK/work/glossary.locked.json" "$WORK/work/par"/newterms_*.txt   # 预览：各组自定译法；同一原文两组译法不同 → CONFLICT，写回前统一
 <PFX> -m ainiee_translate.batch write "$WORK/work/cache.json" "$WORK/work/par"/trans_*.jsonl                 # 一次写回全部
 <PFX> -m ainiee_translate.glossary merge-newterms --locked "$WORK/work/glossary.locked.json" "$WORK/work/par"/newterms_*.txt --apply
 ```
+
+**省 token 的派发方式**：agent 的开销主要是「轮次 × 上下文」——每多一次工具调用就把整段上下文再发一遍。所以让 agent **只读 bundle 一次、只写一次**，校验交给主控；
+agent 的最终消息只回段数、新词数和 ≤5 条拿不准的。并行 agent 的 prompt 把共用部分放最前、逐字相同，便于命中 prompt 缓存。
 
 **唯一铁律：subagent 绝不写 `cache.json`**。subagent 只产出 `trans_N.jsonl` + `newterms_N.txt`，**主控 validate 后一次 `batch write`**。
 各 agent 共享 `STYLE_GUIDE.md`（用 `references/style_guide_template.md` 生成，要点从已确认的样章反推）+ 可选 `BOOK_BIBLE.md`
@@ -325,6 +349,8 @@ v1.4.1 及更早版本的 epub 解析用 `soup.get_text(strip=True)` 抽文本�
 
 - 使用 AiNiee 的 `FileOutputer` 保留原书结构和富文本标签。
 - 输出文件名带 `_translated` 后缀（默认），例如 `book_translated.epub`。
+- **定稿**：加 `--finalize [--title …] [--name …] [--deliver /path/CHN/书名.epub]` → 改中文元数据（书名、`zh-CN`、**固定 identifier**，存在 `work/export.json`）、
+  检查 XML/链接/锚点、核对每个已译段都在成品里，再复制到交付目录。不再需要每本书自写 finalize 脚本。
 
 ---
 
@@ -349,22 +375,23 @@ v1.4.1 及更早版本的 epub 解析用 `soup.get_text(strip=True)` 抽文本�
   "$WORK/work/glossary.locked.json"
 ```
 
-输出 JSON 格式的问题列表，并打印问题总数。两类检测：
+默认每个问题一行（段号 / 类型 / 详情），总数打到 stderr；`--json` 输出纯 JSON，`--out` 另存全文，`--baseline FILE` 隐藏已复核过的误报（`--write-baseline` 存当前清单）。
+头衔+人名（`Elder Maren` → `Maren 长老`）、`Arden of Vel`、助动词 `Will you…`、首字下沉拆开的名字（`<b>O</b>ssa`）都不算丢名。两类检测：
 
 - `empty_translation`：源段有内容但译文为空（漏译）。
 - `name_not_preserved`：源段含锁定表英文人名但译文中该名消失（人名汉化）。
 
-verify 检查**已译（status 1）和已润色（status 2）**两类段（润色文本就存在 `translated_text`）。对每个问题，使用 `batch write`（已译段）/ `polish write`（已润色段，保住状态）修正对应 `text_index` 的译文后重新跑 verify，直到无问题。
+verify 检查**已译（status 1）和已润色（status 2）**两类段（润色文本就存在 `translated_text`）。修正一律用 `batch apply`（按段保住原状态，可只给 `patches`），重新跑 verify，直到无问题。
 
 ### ⚠️ verify 的局限：为什么「verify 干净」≠「没有翻译错误」
 
 verify 是**词汇表执行器**，不是**发现器**。它只能发现「锁定表里登记过的人名」消失的情况，因此天然漏掉下面这些（实战中绝大多数漏网错误都属于此）：
 
 1. **词汇表覆盖不全（头号原因）**：verify 只查 `glossary.locked.json` 的 `characters`。**没进表的名字它根本不知道要查**——配角、地名、舰名，尤其当词汇表是从「上一本书」或 AiNiee 分析缓存里种出来、没针对当前书补全时。一份「2 个问题」的干净报告，往往只是因为表里恰好只有 2 个相关名字。→ **对策：词汇表必须随当前书补全**（见下方 `scan` 发现流程）。
-2. **整段成员检查，漏「同段对错并存」**：若同一段里某名字一处保留英文、另一处被音译（例：`Keru 看着…后来克鲁离开`），verify 看到「Keru 在」就不报。
-3. **「全程音译」的名字无信号**：若某名字在**全书每一处**都被音译（例 `Tenmei→天明`、`Rianu→里亚努`），它从没以英文出现过，"时而对时而错"的不一致信号为零。
-4. **区分不了「音译错误」与「合理代词省略 / 合法意译」**：补全词汇表后，那些把名字合理处理成「他/她」的段会被误报；`Vulcan→瓦肯` 这种合法意译它也无法识别。
-5. **完全不覆盖的错误类型**：①「张冠李戴」——表外名字被换成**别的**名字（`Dax→萨姆`、`Gard→Vic`）；② **丢空格的粘连词**漏进译文（`thenaiskosfragment`；epub 解析器那批已修，见 `repair`）；③ 整句**未翻译的英文残留**留在译文里；④ 模型**幻觉插入**的短乱码（顶替源文的 `Lt`/`Vic`）。
+2. **整段成员检查，漏「同段对错并存」**：若同一段里某名字一处保留英文、另一处被音译（例：`Hale 看着…后来黑尔离开`），verify 看到「Hale 在」就不报。
+3. **「全程音译」的名字无信号**：若某名字在**全书每一处**都被音译（例 `Tamsin→塔姆辛`、`Orvane→奥尔万`），它从没以英文出现过，"时而对时而错"的不一致信号为零。
+4. **区分不了「音译错误」与「合理代词省略 / 合法意译」**：补全词汇表后，那些把名字合理处理成「他/她」的段会被误报；`Avalon→阿瓦隆` 这种合法意译它也无法识别。
+5. **完全不覆盖的错误类型**：①「张冠李戴」——表外名字被换成**别的**名字（`Pell→萨姆`、`Brask→Vic`）；② **丢空格的粘连词**漏进译文（`thenaiskosfragment`；epub 解析器那批已修，见 `repair`）；③ 整句**未翻译的英文残留**留在译文里；④ 模型**幻觉插入**的短乱码（顶替源文的 `Lt`/`Vic`）。
 
 ### 步骤 7+：用 `scan` 发现词汇表缺口与解析瑕疵（补 verify 盲区）
 
@@ -372,37 +399,39 @@ verify 是**词汇表执行器**，不是**发现器**。它只能发现「锁�
 <PFX> -m ainiee_translate.scan \
   "$WORK/work/cache.json" \
   --locked "$WORK/work/glossary.locked.json" \
-  --mode all        # all | discover | terms | strays | merges
+  --mode all        # all | discover | terms | strays | merges | pending
 ```
 
+默认只打每类前 15 条（`--top`），`--json` / `--out` 拿全文。`pending` 见步骤 5+（开译前找新词）。
+
 - `discover`：找**不在词汇表、原文有但译文中消失**的专名（语言无关、不依赖词汇表、逐出现处、覆盖 status 1+2）。
-  - `inconsistent`（**高置信，优先处理**）：同名时而保留英文、时而消失——单点滑落 / 同段对错并存（如 Rio Grande、Keru）。
-  - `never_preserved`（**需人眼判断**）：从不以英文出现，含「全程被音译的真名」（Tenmei→天明、Rianu→里亚努）与「合法意译的术语」（Vulcan→瓦肯）两类混在一起。
-- `terms`：**反向漏译**——词汇表里有中文译名（`dst`、非 `keep_source`）的术语，却在个别段被留成了英文（`Starfleet`→星际舰队 全书都译了、唯独某段漏成 "Starfleet"）。
+  - `inconsistent`（**高置信，优先处理**）：同名时而保留英文、时而消失——单点滑落 / 同段对错并存（如 Rio Grande、Hale）。
+  - `never_preserved`（**需人眼判断**）：从不以英文出现，含「全程被音译的真名」（Tamsin→塔姆辛、Orvane→奥尔万）与「合法意译的术语」（Avalon→阿瓦隆）两类混在一起。
+- `terms`：**反向漏译**——词汇表里有中文译名（`dst`、非 `keep_source`）的术语，却在个别段被留成了英文（`Coastguard`→海岸警卫队 全书都译了、唯独某段漏成 "Coastguard"）。
 - `strays`：**模型幻觉插入**——译文里出现、但该段原文里没有的英文 token（凭空写出的错名 `Vic`/`Sam`/`Sef`、顶替"the guard"的 `Lt`）。是**复查列表非合格门**：含一贯保留的外星术语，需人眼筛；真信号是无来由的短错名。
-- `merges`：原文里**超长 Latin 串或 camelCase 跳变**的丢空格粘连词（`thenaiskosfragment`、`speciesDraco`、`TheAlexandria`）；调小 `--min-merge-len` 可挖更短的。
+- `merges`：原文里**超长 Latin 串或 camelCase 跳变**的丢空格粘连词（`thenaiskosfragment`、`speciesDraco`、`TheAlexandria`）；默认 ≥18 字母或 camelCase（普通长词如 uncomfortable 不再上榜），调小 `--min-merge-len` 可挖更短的。
   - ⚠️ 这类粘连的**主因**曾是 epub 解析器逐片段 strip（`her <i>blade</i> fell` → `herbladefell`），已在解析层修复。新解析的项目里 `merges` 命中数应大幅下降；**存量项目**先跑 `repair --apply` 再看，剩下的才是源书本身的排版缺陷。
 
 ### 步骤 7++：`audit` 机械体检与 `glossary lint`
 
 ```bash
-<PFX> -m ainiee_translate.audit "$WORK/work/cache.json" --out "$WORK/work/audit.json"      # 空译/标记不匹配（硬伤）+ 半角标点/「」/省略号/中文内空格/未译原样搬运/长度比异常（警告）
+<PFX> -m ainiee_translate.audit "$WORK/work/cache.json" --out "$WORK/work/audit.json"      # 空译/标记不匹配（硬伤，认 decisions.json 的段级例外）+ 半角标点/「」/…/本书 lint 规则（警告）；默认每类一行
 <PFX> -m ainiee_translate.glossary lint --locked "$WORK/work/glossary.locked.json"         # alias 带头衔（verify 假阳性源）、两人共用同一 alias、同姓角色、重复/缺译名的术语
 ```
 
 `audit` 与 `batch write` 闸门用同一套检查，所以正常写入的项目 `empty`/`tag_mismatch` 应为 0；警告类按段号抽查。
-`glossary lint` 的 `alias_has_title`（如 `Admiral Janeway`）会让 verify 在头衔被翻译的每一处都误报，`alias_collides`（`Paris` 同时挂在 Owen Paris 与 Tom Paris 下）说明清洗时把两个人并了——改表再 verify。
+`glossary lint` 的 `alias_has_title`（如 `Admiral Hollis`）会让 verify 在头衔被翻译的每一处都误报，`alias_collides`（`Ashby` 同时挂在 Owen Ashby 与 Tom Ashby 下）说明清洗时把两个人并了——改表再 verify。
 
-**推荐校对闭环**：`verify`（清掉表内硬伤）→ `audit`（机械硬伤与风格）→ `glossary lint`（表结构）→ `scan --mode all`（`discover`→`inconsistent` 全改、`never_preserved` 挑真名；`terms`→补回被漏成英文的术语；`strays`→揪幻觉错名；`merges`→收粘连词）→ **把确认的真名/地名补进 `glossary.locked.json` 的 `characters`，保留英文的通名补进 `terms`（`keep_source:true`），有中文译名的术语进 `terms`（带 `dst`）** → 再 `verify`（这下表全了，能守住；忽略代词省略类误报）。改已润色段一律用 `polish write` 以保住状态。
+**推荐校对闭环**：`verify`（清掉表内硬伤）→ `audit`（机械硬伤与风格）→ `glossary lint`（表结构）→ `scan --mode all`（`discover`→`inconsistent` 全改、`never_preserved` 挑真名；`terms`→补回被漏成英文的术语；`strays`→揪幻觉错名；`merges`→收粘连词）→ **把确认的真名/地名补进 `glossary.locked.json` 的 `characters`，保留英文的通名补进 `terms`（`keep_source:true`），有中文译名的术语进 `terms`（带 `dst`）** → 再 `verify`（这下表全了，能守住；忽略代词省略类误报）。改已有译文一律用 `batch apply`（保住状态、记来源）。
 
-> 经验：写自查脚本做名字比对时，先归一化撇号（弯/直撇号 `'`/`'` 统一），否则 `Mak'ala`、`Quark's`、`O'Brien` 会因撇号不同被误判为「消失」。verify/scan 内部已统一处理。
+> 经验：写自查脚本做名字比对时，先归一化撇号（弯/直撇号 `'`/`'` 统一），否则 `D'Arcy`、`Hank's`、`O'Brien` 会因撇号不同被误判为「消失」。verify/scan 内部已统一处理。
 
 ## 步骤 7.5：对抗性审核（可选，去 AI 味 + 抓润色漏掉的误译）
 
-润色只改表达，且同一个模型自审漏得多（Warpath 实测：Sonnet 润色后人工逐句校 4 章仍抓出 ~80 段，几乎全是词法/搭配层与真误译）。
+润色只改表达，且同一个模型自审漏得多（试点书实测：Sonnet 润色后人工逐句校 4 章仍抓出 ~80 段，几乎全是词法/搭配层与真误译）。
 本步先让 **Blind Reader** 只读中文、像读者一样标出读着别扭的地方（`review blind` / `review hints`），再把**找问题**（Reviewer，带源文逐条落实 flag，句式病整句重写）和**否决问题**（Challenger，奖励精度，但读者绊过的地方不许以「原译可通／偏好」否决）拆给互不通气的 Opus 实例，另加一个只读术语清单的
 Consistency auditor；主控只跑机械闸门：`review pre`（`offending` 恰好一次、红线改动即拒、定稿术语只加不删、`<i>/<b>` 成对、
-不动拉丁 token）→ `review final`（合并 verdicts：A 误译/B 硬伤自动进 `apply_X.json` → `polish write`；C 翻译腔/D 不一致进 `review_ALL.md`
+不动拉丁 token）→ `review final`（合并 verdicts：A 误译/B 硬伤自动进 `apply_X.json` → `batch apply`；C 翻译腔/D 不一致进 `review_ALL.md`
 给用户勾选 → `review pick`）。分类标准与十二条 AI 味清单在 `references/review_taxonomy.md`，三份 prompt 在 `references/review_prompts.md`，
 协议、`config.json` 红线格式、先在人工校过的章节上做基准打分（`review benchmark/score`，判定门召回 ≥60% 且精度 ≥80%）见
 [`references/adversarial_review.md`](references/adversarial_review.md)。斜杠命令 `/ainiee-translate:review <起-止段号>`。
@@ -424,9 +453,18 @@ Consistency auditor；主控只跑机械闸门：`review pre`（`offending` 恰�
 # … Challenger ×N（读 challenge_gN.jsonl）+ Consistency ×1 → verdicts_gN.jsonl / findings_D.jsonl …
 <PFX> -m ainiee_translate.review stats "$WORK/work/cache.json" g1 g2           # → stats.md：各格否决率，>2% 的移回送审
 <PFX> -m ainiee_translate.review final "$WORK/work/cache.json" g1 g2 D
-<PFX> -m ainiee_translate.polish write "$WORK/work/cache.json" "$WORK/work/review"/apply_g*.json
+<PFX> -m ainiee_translate.batch apply "$WORK/work/cache.json" "$WORK/work/review"/apply_g*.json --source adversarial
 <PFX> -m ainiee_translate.review merge "$WORK/work/cache.json" g1 g2 D        # → review_ALL.md 给用户
+<PFX> -m ainiee_translate.review pick "$WORK/work/cache.json" g1 g2 D --min-sev 2 --exclude g1-041   # 「严重度 2 以上全改，除了 g1-041」
+<PFX> -m ainiee_translate.batch apply "$WORK/work/cache.json" "$WORK/work/review"/apply_pick.json --source user
 ```
+
+**第二轮及以后加 `--run <名>`**（如 `--run ch11-end`）：本轮文件进 `review/<名>/`，`config.json`/`EXAMPLES.md` 仍用根目录共享的，不会与上一轮的 g1… 撞名。
+**外部审校**（Codex、人工）：`review import cache.json their.jsonl --group x --source codex` 把对方的 `{text_index, offending|current, proposed|fix, severity, reason}`
+转成 findings，走同一个 `pre` 闸门（offending 必须在**当前**译文里恰好一次，所以对方读的是旧快照也不会误写）。交接格式见 `references/external_review.md`。
+**意义审（双模型）**：`cache dump --range A-B --out seg.json` 给两个不同模型族的审校 → 各自 `opus_X.jsonl` / `fable_X.jsonl`（`{i, cat, sev, issue, fix}`）
+→ `review dual-merge cache.json opus_*.jsonl fable_*.jsonl --out fix_input.json`（两家都报的段排前）→ 编辑 agent 输出 `{text_index, patches:[[旧,新]…], reason}`
+→ `batch apply … --source dual`。模板 `references/review_workflow.js`。
 
 ---
 
@@ -455,20 +493,27 @@ $PFX -m ainiee_translate.prompt --config "~/Library/Application Support/AiNiee/c
 # 批次读取
 $PFX -m ainiee_translate.batch read "$WORK/work/cache.json" --size 100
 
-# 批次写回
+# 批次写回（新译）/ 修正写回（保状态、可 patches、记来源）
 $PFX -m ainiee_translate.batch write "$WORK/work/cache.json" "$WORK/work/translations_001.json"
+$PFX -m ainiee_translate.batch apply "$WORK/work/cache.json" fixes.jsonl --source codex
+
+# 缓存查询与小修（不用再手写脚本）
+$PFX -m ainiee_translate.cache stats|show|dump|set-status|fill-dupes "$WORK/work/cache.json" …
+
+# 项目状态：定口径 / 原文笔误 / 标记例外 / 本书 lint / 规则卡
+$PFX -m ainiee_translate.state settle|errata|tag-exception|lint-rule|card|show "$WORK/work/cache.json" …
 
 # 导出
-$PFX -m ainiee_translate.export --cache "$WORK/work/cache.json" --output "$WORK/out/" --input book.epub
+$PFX -m ainiee_translate.export --cache "$WORK/work/cache.json" --output "$WORK/out/" --input book.epub [--finalize --deliver …]
 
 # 验证
-$PFX -m ainiee_translate.verify "$WORK/work/cache.json" "$WORK/work/glossary.locked.json"
+$PFX -m ainiee_translate.verify "$WORK/work/cache.json" "$WORK/work/glossary.locked.json" [--baseline known.json] [--json]
 
 # 修复存量项目的行内标记与空格（旧版解析出的 cache.json；预览去掉 --apply）
 $PFX -m ainiee_translate.repair "$WORK/work/cache.json" --apply
 
 # 发现（补 verify 盲区：表外被音译/丢失的专名 + 术语漏译 + 幻觉错名 + 粘连词）
-$PFX -m ainiee_translate.scan "$WORK/work/cache.json" --locked "$WORK/work/glossary.locked.json" --mode all
+$PFX -m ainiee_translate.scan "$WORK/work/cache.json" --locked "$WORK/work/glossary.locked.json" --mode all   # 或 --mode pending（开译前新词）
 
 # 续翻/补章：从已译段抽专名先例表给并行 agent 对齐
 $PFX -m ainiee_translate.precedents "$WORK/work/cache.json" --for "$WORK/work/par"/grp_*_src.json --locked "$WORK/work/glossary.locked.json" --out "$WORK/work/BOOK_BIBLE.md"
@@ -484,13 +529,15 @@ $PFX -m ainiee_translate.progress "$WORK/work/cache.json" --watch
 
 # 并行翻译：分组 / 瘦身词汇表 / 验收 / 一次写回多组（详见 references/parallel_translation.md）
 $PFX -m ainiee_translate.batch split "$WORK/work/cache.json" --target 300 --out-dir "$WORK/work/par" --context 20
+$PFX -m ainiee_translate.batch bundle "$WORK/work/cache.json" "$WORK/work/par"/grp_*_src.json --include "$WORK/work/user_prompt.md"
 $PFX -m ainiee_translate.glossary filter --locked "$WORK/work/glossary.locked.json" --for "$WORK/work/par/grp_1_src.json" --out "$WORK/work/par/g_1.json"
 $PFX -m ainiee_translate.batch validate "$WORK/work/par/grp_1_src.json" "$WORK/work/par/trans_1.jsonl"
 $PFX -m ainiee_translate.batch write "$WORK/work/cache.json" "$WORK/work/par"/trans_*.jsonl
 
 # 对抗性审核：切组 / 闸门 / 抽段 / 术语清单 / 合并 verdicts / 过目表 / 勾选 / 基准打分 / 留痕（详见 references/adversarial_review.md）
 $PFX -m ainiee_translate.batch split "$WORK/work/cache.json" --stage review --range 438-719 --prefix g --out-dir "$WORK/work/review/groups" --context 3
-$PFX -m ainiee_translate.review rules|blind|hints|pre|segs [--tier]|final|merge|pick|inventory|stats|benchmark|score|log "$WORK/work/cache.json" …
+$PFX -m ainiee_translate.review rules|blind|hints|pre|segs [--tier]|final|merge|pick|inventory|stats|benchmark|score|log|ledger|import "$WORK/work/cache.json" [--run R] …
+$PFX -m ainiee_translate.review dual-merge "$WORK/work/cache.json" opus_*.jsonl fable_*.jsonl --out fix_input.json
 ```
 
 ---
@@ -548,7 +595,7 @@ A: verify 只执行**锁定表里登记过的**人名，且无法识别张冠李
 ```bash
 <PFX> -m ainiee_translate.progress work/cache.json --watch     # 另开终端分屏：rich 实时面板，2 秒刷新
 <PFX> -m ainiee_translate.progress work/cache.json --once      # 渲染一次（斜杠命令 /ainiee-translate:progress 就是它）
-<PFX> -m ainiee_translate.progress work/cache.json --line      # 一行摘要：📖 Warpath 2391/2507 (95%) · ▶3 18/24 ▶4 25/25 · ✓1,2 · 4.1/min
+<PFX> -m ainiee_translate.progress work/cache.json --line      # 一行摘要：📖 The Long Road 2391/2507 (95%) · ▶3 18/24 ▶4 25/25 · ✓1,2 · 4.1/min
 <PFX> -m ainiee_translate.progress work/cache.json --json      # 完整快照（--out FILE 写文件）
 <PFX> -m ainiee_translate.progress work/cache.json --serve 8765 --open   # 本地网页看板：任何浏览器、Claude Code Desktop 都能开，2 秒轮询
 ```
