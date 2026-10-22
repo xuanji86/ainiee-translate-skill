@@ -7,7 +7,9 @@ allowed-tools: Bash
 
 ```bash
 PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" \
-"${AINIEE_PY:?}" -m ainiee_translate.export --cache work/cache.json --output out/ --input "$1"
+"${AINIEE_PY:?}" -m ainiee_translate.export --cache work/cache.json --output out/ --input "$1" --finalize
 ```
 
-完成后报告 `out/` 下的成品路径。
+`--finalize` 读 `work/export.json`（书名、`zh-CN`、**固定 identifier**、交付路径 `deliver`；首次导出自动生成 identifier，之后不变），
+改元数据、查 XML/链接/锚点、核对每个已译段都在成品里，再复制到 `deliver`。第一次可带 `--title … --name … --deliver …` 写进配置。
+完成后报告成品路径、核对段数与 warnings（源书自带的坏链接只警告）。

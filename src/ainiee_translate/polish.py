@@ -13,7 +13,7 @@ def write_polished(cache_path: str, polished: list[dict], *, force: bool = False
     return cache_io.apply_writeback(
         cache_path, polished, TranslationStatus.POLISHED,
         lambda p: p.get("polished_text", p.get("translated_text", "")),
-        check=batch.make_check(allow_tag_mismatch), force=force)
+        check=batch.make_check(allow_tag_mismatch, cache_path), force=force)
 
 
 def main(argv=None):

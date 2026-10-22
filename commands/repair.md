@@ -30,5 +30,4 @@ PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" \
 ```
 
 对列出的每段，按 `references/translation_rules.md` 把 `<i>`/`<b>` 标记补进译文
-（包住中文里对应的那一段），再用 `batch write`（status=1 已译）或
-`polish write`（status=2 已润色，保住状态）写回。
+（包住中文里对应的那一段），再用 `batch apply`（按段保住原状态）写回。

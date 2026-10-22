@@ -5,7 +5,7 @@
 **Agent 原生的长篇翻译管线** —— 让编码 agent 本身当翻译引擎，端到端译完一本书。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.14.1-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
+[![Version](https://img.shields.io/badge/version-1.15.0-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue.svg)](pyproject.toml)
 [![Tests](https://img.shields.io/badge/tests-90%20passing-brightgreen.svg)](tests/)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://claude.com/claude-code)
@@ -145,6 +145,8 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 - **导入已有项目** —— 直接接管 AiNiee 工程缓存（`AinieeCacheData.json`）或既有 `cache.json`，续翻 / 润色 / 校验 / 重新导出。
 - **模块化** —— 整套任务设置（提示词、词汇表、禁翻表、风格、语言对）打包成可复用模块，一个插件应对不同书；支持从 AiNiee profile 一键导入。
 - **多 agent 并行** —— 风格锁定后可派多个 subagent 并发翻不同章节（实测 11 章 1704 段 / 7 agent / ~9 分钟）。编排全是命令：`batch split` 按章节边界分组并附前文上下文，`glossary filter` 给每组一份瘦身词汇表（66 KB → ~5 KB），subagent 边译边写 JSONL，`batch validate` 逐组验收，`batch write` 一次写回全部。铁律：subagent 只产出译文文件，**由主控写回**。
+- **项目状态与留痕（1.15）** —— `decisions.json` 集中放已定口径、原文笔误、段级标记例外、本书 lint 规则，所有阶段共读；`batch apply` 是唯一的修正写回入口（保住每段状态、可只给补丁），`--source` 记进 `provenance.jsonl`，之后的审核想把语义修正改回去会被闸门拒收。
+- **省 token 的派发（1.15）** —— `batch bundle` 给每组一个「读一次、写一次」的文件（规则卡 + 词汇表 TSV + 前文 + 原文）；开译前 `scan --mode pending` 先找出新词定名；各组新词带译法，`merge-newterms` 报跨组冲突；复审只看改过的段（`--changed-since`）；`review ledger` 记每阶段 token。
 - **润色 pass** —— 可选二次加工，状态 `TRANSLATED → POLISHED`，导出自动采用润色文本。
 - **对抗性审核** —— 润色之后的第二道工序：Reviewer（奖励召回）与 Challenger（奖励否决）是互不通气的两个 Opus 实例，主控只跑机械闸门（子串级替换、红线改动即拒、定稿术语只加不删、标记/拉丁 token 不变）；A 误译/B 硬伤自动写回，C 翻译腔/D 不一致列表给人过目。Warpath 试点：召回 71–75%、精度 87–91%，抓到人工校对漏掉的真误译。
 
@@ -197,21 +199,23 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 |---|---|
 | `parse` | `--input <书> --type AutoType --out <cache.json>` |
 | `glossary` | `build --config <config.json> [--analysis <路径>] --out <locked.json>` · `filter --locked L --for grp_N_src.json --out g_N.json` · `lint --locked L` · `merge-newterms --locked L newterms_*.txt --apply` |
-| `batch` | `read <cache> --size N` · `read-translated <cache> --size N` · `split <cache> --target 300 --out-dir D --context 20 [--stage polish\|review] [--range A-B] [--prefix g]` · `validate <src.json> <trans.jsonl>` · `write <cache> <译文.json|.jsonl>… [--force] [--allow-tag-mismatch]` |
+| `batch` | `read <cache> --size N` · `read-translated <cache> --size N` · `split <cache> --target 300 --out-dir D --context 20 [--stage polish\|review] [--range A-B] [--prefix g] [--changed-since OLD]` · `bundle <cache> grp_*_src.json [--stage …] [--include rules.md]` · `validate <src.json> <trans.jsonl> [--cache C]` · `write <cache> <译文.json|.jsonl>… [--force] [--allow-tag-mismatch]` · `apply <cache> <修正.json|.jsonl>… [--source S] [--reason R]`（保状态、可 patches）|
+| `cache` | `stats` · `show --range A-B` · `dump --range A-B --out F [--changed-since OLD]` · `set-status --range A-B --from 7 --to 0 [--apply]` · `fill-dupes [--apply]` |
+| `state` | `settle --dst X [--src Y]` · `errata IDX --note …` · `tag-exception IDX --reason …` · `lint-rule NAME --re R` · `card [--range A-B]` · `show`（`work/decisions.json`）|
 | `polish` | `write <cache> <润色.json|.jsonl>… [--force] [--allow-tag-mismatch]` |
 | `prompt` | `--config <config> [--out F] [--translate-system\|--polish]` |
 | `module` | `list` · `show <名>` · `create <名> [--source-language X --target-language Y]` · `load <名> [--work D]` |
 | `profile` | `import --profile <p.json> --name <名> [--target-language X] [--force]` |
 | `project` | `list [--ainiee-cache-dir D]` · `import (--ainiee <ID>\|--cache <路径>) --work <目录>` |
-| `export` | `--cache <cache> --output <目录> --input <原书>` |
-| `verify` | `<cache> <locked.json>` |
-| `scan` | `<cache> --locked <locked.json> --mode all` |
+| `export` | `--cache <cache> --output <目录> --input <原书> [--finalize [--title T] [--name N] [--deliver PATH]]`（定稿：中文元数据、固定 identifier、链接/段落核对）|
+| `verify` | `<cache> <locked.json> [--json] [--out F] [--baseline F] [--write-baseline F]` |
+| `scan` | `<cache> --locked <locked.json> --mode all\|pending [--json] [--out F]` |
 | `repair` | `<cache> [--apply] [--list-marked]` |
 | `audit` | `<cache> [--out audit.json] [--allow-tag-mismatch]` |
 | `progress` | `<cache> [--watch\|--once\|--line\|--json [--out F]\|--serve PORT [--open]]`（多 agent 进度面板 / statusline 一行 / 本地网页看板；润色阶段双进度条；`--watch`/`--line` 同时写 [claude-statuspane](https://github.com/xuanji86/claude-statuspane) 进度条，目录可用 `STATUSPANE_PROGRESS_DIR` 改）|
 | `scope` | `<cache> [--apply] [--keep ID…] [--drop ID…] [--force]`（只译正文 + Historian's Note：书评/版权/献词/题记/目录页/致谢/作者简介/广告页标为排除，导出保留原文）|
 | `precedents` | `<cache> --for grp_*_src.json [--locked L] --out BOOK_BIBLE.md`（续翻时从已译段抽专名先例）|
-| `review` | `blind <cache> X…` · `hints <cache> flags_X.jsonl…` · `pre <cache> findings_X.jsonl…` · `segs <cache> findings_X.pre.jsonl…` · `inventory <cache> --range A-B` · `final <cache> X…` · `merge <cache> X…` · `pick <cache> X… --ids …` · `benchmark <cache> --baseline BAK --range A-B` · `score <cache> X…` · `log <cache> --stage … --file …`（对抗性审核的机械半边；见 `references/adversarial_review.md`）|
+| `review` | `blind <cache> X…` · `hints <cache> flags_X.jsonl…` · `pre <cache> findings_X.jsonl…` · `segs <cache> findings_X.pre.jsonl…` · `inventory <cache> --range A-B` · `final <cache> X…` · `merge <cache> X…` · `pick <cache> X… --ids …` · `benchmark <cache> --baseline BAK --range A-B` · `score <cache> X…` · `log <cache> --stage … --file … [--tokens N --segments N]` · `ledger <cache>` · `import <cache> F --group X --source codex` · `dual-merge <cache> a_*.jsonl b_*.jsonl --out F`；第二轮起加 `--run R`（对抗性审核的机械半边；见 `references/adversarial_review.md`）|
 
 ---
 
@@ -286,7 +290,7 @@ examples.json        # few-shot 示例（可选）
 
 ### `verify` —— 词汇表执行器
 
-只查两类硬伤：`empty_translation`（漏译）、`name_not_preserved`（锁定表人名消失）。
+只查两类硬伤：`empty_translation`（漏译）、`name_not_preserved`（锁定表人名消失）。头衔+人名、`X of Y`、助动词 Will、首字下沉不再误报；复核过的误报存 `--write-baseline`，之后 `--baseline` 只看新增。
 
 > ⚠️ **「verify 干净」≠「没有翻译错误」**。它只认**锁定表里登记过的**名字——没进表的名字它根本不知道要查。
 > 一份「2 个问题」的干净报告，往往只说明表里恰好只有 2 个相关名字。
@@ -298,7 +302,8 @@ examples.json        # few-shot 示例（可选）
 | `discover` | 表外专名：`inconsistent`（时而保留时而消失，**高置信优先处理**）/ `never_preserved`（全程被音译的真名 + 合法意译的术语，需人眼分） |
 | `terms` | **反向漏译**——词汇表有中文译名的术语，个别段却留成英文 |
 | `strays` | **幻觉插入**——译文里出现、原文却没有的英文 token（凭空错名）|
-| `merges` | 丢空格的粘连词（超长 Latin 串 / camelCase 跳变）|
+| `merges` | 丢空格的粘连词（≥18 字母的 Latin 串 / camelCase 跳变）|
+| `pending` | **开译前**：未译部分里反复且集中出现、已译部分没有、表里也没有的新词（新物种/装置/头衔），先定名再分组 |
 
 ### `audit` —— 机械体检（与写回闸门同一套检查）
 
@@ -321,7 +326,7 @@ CJK 相关检查只对含 CJK 的译文生效。`glossary lint` 则查表本身�
 | Consistency auditor | 只读 `review inventory` 生成的术语清单，判同一英文词该不该一个译法 | `findings_D.jsonl` |
 
 主控只跑机械闸门：`review pre`（`offending` 在现译中恰好一次、红线**改动即拒**、定稿术语只加不删、`<i>/<b>` 成对、不动拉丁 token）
-→ `review final`（合并 verdicts：A/B 进 `apply_X.json` → `polish write`；C/D 进 `review_ALL.md` 给人勾选 → `review pick`）。
+→ `review final`（合并 verdicts：A/B 进 `apply_X.json` → `batch apply`；C/D 进 `review_ALL.md` 给人勾选 → `review pick`）。
 先在人工校对过的章节上 `review benchmark` + `score` 打分再铺全书（Warpath 试点：召回 71–75%、Challenger 精度 87–91%，
 且报出而人工没改的段抽查多数是人工漏掉的真问题）。协议、`config.json` 红线格式、prompt 模板见
 `skills/ainiee-translate/references/adversarial_review.md` / `review_taxonomy.md` / `review_prompts.md`；斜杠命令 `/ainiee-translate:review <起-止段号>`。

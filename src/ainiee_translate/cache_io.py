@@ -120,6 +120,7 @@ class WriteResult:
     applied: int = 0
     rejected: list = field(default_factory=list)   # [{"text_index", "reason"}]
     warnings: dict = field(default_factory=dict)   # soft-lint category -> count (applied items)
+    changes: list = field(default_factory=list)    # [{"text_index", "before", "after"}] text actually changed
 
     def summary(self, verb: str = "applied") -> str:
         s = f"{verb} {self.applied} of {self.total}"
@@ -128,10 +129,24 @@ class WriteResult:
         return s
 
 
-def apply_writeback(cache_path: str, items: list[dict], status: int, get_text,
+def patched_text(current: str, patches) -> str | None:
+    """Apply [[old, new], …] in order; each `old` must occur exactly once. None = a patch missed."""
+    text = current or ""
+    for old, new in patches:
+        if not old or text.count(old) != 1:
+            return None
+        text = text.replace(old, new, 1)
+    return text
+
+
+def apply_writeback(cache_path: str, items: list[dict], status, get_text,
                     check=None, force: bool = False) -> WriteResult:
     """Lock → backup → load → for each item: gate → mutate → atomic save.
 
+    `status` None keeps each segment's status (TRANSLATED stays, POLISHED stays; an
+    untranslated/excluded one becomes TRANSLATED) — so one write path serves both.
+    A row may carry `patches: [[old, new], …]` instead of full text: they are applied to the
+    segment's current text (each `old` exactly once, else rejected `patch_not_found`).
     `check(cache_item, text) -> (hard: list[str], soft: list[str])` is the write
     gate: any hard reason rejects the item (unless force=True); soft reasons are
     tallied into WriteResult.warnings. Unknown text_index is always rejected."""
@@ -142,11 +157,17 @@ def apply_writeback(cache_path: str, items: list[dict], status: int, get_text,
         idx = index_items(project)
         for it in items:
             ti = int(it["text_index"])
-            text = get_text(it)
             item = idx.get(ti)
             if item is None:
                 res.rejected.append({"text_index": ti, "reason": "unknown_index"})
                 continue
+            if "patches" in it:
+                text = patched_text(item.translated_text, it["patches"])
+                if text is None:
+                    res.rejected.append({"text_index": ti, "reason": "patch_not_found"})
+                    continue
+            else:
+                text = get_text(it)
             if check is not None:
                 hard, soft = check(item, text)
                 if hard and not force:
@@ -154,12 +175,18 @@ def apply_writeback(cache_path: str, items: list[dict], status: int, get_text,
                     continue
                 for c in soft:
                     res.warnings[c] = res.warnings.get(c, 0) + 1
+            if text != (item.translated_text or ""):
+                res.changes.append({"text_index": ti, "before": item.translated_text or "", "after": text})
             item.translated_text = text
-            item.translation_status = status
+            if status is None:
+                if item.translation_status not in (TranslationStatus.TRANSLATED, TranslationStatus.POLISHED):
+                    item.translation_status = TranslationStatus.TRANSLATED
+            else:
+                item.translation_status = status
             res.applied += 1
         save_cache(project, cache_path)
-    _log_event(cache_path, {"event": "write", "status": int(status), "applied": res.applied,
-                            "rejected": len(res.rejected), "total": res.total})
+    _log_event(cache_path, {"event": "write", "status": None if status is None else int(status),
+                            "applied": res.applied, "rejected": len(res.rejected), "total": res.total})
     return res
 
 

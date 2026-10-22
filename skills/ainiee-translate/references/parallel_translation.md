@@ -35,6 +35,18 @@
 主控：batch validate 每组 → 不过的只重派那一组 → batch write 一次全部 → merge-newterms → verify + scan → export
 ```
 
+## 推荐做法（1.15 起：省 token、少返工）
+
+1. **开译前定新词**：`scan cache.json --locked glossary.locked.json --mode pending` 列出未译部分里反复出现、已译部分没有、
+   表里也没有的词（按「集中出现」排序，新物种/装置/头衔排前，包括小写的新物种名）。先定名进表，否则每组各起一个译名。
+2. **bundle 派发**：`batch bundle cache.json par/grp_*_src.json --include work/user_prompt.md` 给每组写一个 `bundle_N.md`
+   （交付约定 + `state card` 规则卡 + 本组词汇表 TSV + 前文 + 原文 JSON lines）。agent 的 prompt 只需一句「读 bundle_N.md 并照做」：
+   **读一次、Write 一次、不回读不自校**——每多一次工具调用就把整段上下文再发一遍，这是 agent token 的大头。
+3. **新词带译法**：`newterms_N.txt` 每行 `原文<TAB>译法`（保留原文写 `原文<TAB>原文`）。`glossary merge-newterms`（不带 --apply）
+   先预览：同一原文两组译法不同 → `CONFLICT`，**写回前**在 trans 文件里统一，再 `--apply`。
+4. **验收认例外**：`batch validate … --cache work/cache.json` 读 `decisions.json`（段级标记例外、本书 lint 规则）。
+5. **记账**：每个 agent 收工 `review log --stage translate --model <模型> --tokens <总 token> --segments <段数>`；`review ledger` 汇总。
+
 ## 步骤
 
 ### 1. 分组 + 抽取源文（一条命令）

@@ -12,7 +12,7 @@ ch2–5 仍抓出 ~80 段问题——几乎全是词法/搭配层（非词、固
 | **Reviewer** | Opus | 本组源文+现译、`hints_X.json`（盲读标记+源文）、分类清单、`EXAMPLES.md`、红线/风格指南、前几段语境 | `findings_X.jsonl` | **奖励召回**：每条 flag 都要处理；用词病改词，句式病**整句重写**；每条引用源文证据 |
 | **Challenger** | Opus（另一实例） | `challenge_X.jsonl` + 涉及段 + 红线 + `rules_X.json`/`EXAMPLES.md` + 盲读标记 | `verdicts_X.jsonl` | **奖励否决**：违反红线 / 引入新错 → reject；「原译没错／偏好」只在读者没绊过时才能用；可 amend |
 | **Consistency auditor** | Opus ×1 | `review inventory` 生成的术语清单 | `findings_D.jsonl` | 只判「同一英文词该不该一个译法」 |
-| **主控** | — | 全部产物 | `apply_X.json`、`review_X.md`、`review_log.jsonl` | `review pre/final` 闸门 → A/B `polish write`，C/D 列给用户 |
+| **主控** | — | 全部产物 | `apply_X.json`、`review_X.md`、`review_log.jsonl` | `review pre/final` 闸门 → A/B `batch apply --source adversarial`，C/D 列给用户 |
 
 Warpath 试点（ch2–5 人工校对做基准）：召回 71–75%（剔除答案泄露后）、Challenger 精度 87–91%，
 且 Reviewer 报出而人工没改的段抽查 14/16 是人工漏掉的真问题。Challenger 否掉的典型：「护盾已落」（与「升起护盾」
@@ -82,7 +82,7 @@ review/
   verdicts_X.jsonl     Challenger 产出
   rules_X.json         本组相关的词汇表条目 + 裁定条目（review rules）
   stats.md             各工序产出率（review stats）
-  apply_X.json(+.meta) A/B 类，直接喂 polish write；review_X.md / review_ALL.md 给用户过目
+  apply_X.json(+.meta) A/B 类，直接喂 batch apply（保状态、记 provenance）；review_X.md / review_ALL.md 给用户过目
   inventory.json       术语清单（Consistency auditor 的唯一输入）
   benchmark.json / scores.md   基准与打分（只在有人工校对过的章节上做）
   review_log.jsonl     留痕：哪个 agent、什么模型、哪份文件、应用了哪些 id
@@ -136,14 +136,14 @@ review/
 <PFX> -m ainiee_translate.review pre   <PROJ>/work/cache.json $REV/findings_D.jsonl
 <PFX> -m ainiee_translate.review final <PROJ>/work/cache.json g1 g2 D
 # 5. 写回 A/B（只有主控写 cache）、复核、导出
-<PFX> -m ainiee_translate.polish write <PROJ>/work/cache.json $REV/apply_g1.json $REV/apply_g2.json
+<PFX> -m ainiee_translate.batch apply <PROJ>/work/cache.json $REV/apply_g1.json $REV/apply_g2.json --source adversarial
 <PFX> -m ainiee_translate.review log <PROJ>/work/cache.json --stage apply --group g1 --file $REV/apply_g1.meta.json
 <PFX> -m ainiee_translate.verify <PROJ>/work/cache.json <PROJ>/work/glossary.locked.json
 <PFX> -m ainiee_translate.audit  <PROJ>/work/cache.json
-# 6. C/D 合并成一张表给用户；用户点名的 id 用 pick 生成 apply 文件再 polish write
+# 6. C/D 合并成一张表给用户；用户点名的 id（或 --min-sev N --exclude …）用 pick 生成 apply 文件再 batch apply
 <PFX> -m ainiee_translate.review merge <PROJ>/work/cache.json g1 g2 D            # → review_ALL.md
 <PFX> -m ainiee_translate.review pick  <PROJ>/work/cache.json g1 g2 D --ids g1-012 g1-043 D-001   # → apply_pick.json
-<PFX> -m ainiee_translate.polish write <PROJ>/work/cache.json $REV/apply_pick.json
+<PFX> -m ainiee_translate.batch apply <PROJ>/work/cache.json $REV/apply_pick.json --source user
 ```
 
 闸门顺序（`review pre` 逐条）：必填字段 → 类别 ∈ A–D → `offending` 恰好一次 → 红线/定稿/禁字 →

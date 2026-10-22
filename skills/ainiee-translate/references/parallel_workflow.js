@@ -1,60 +1,65 @@
-// Workflow 脚本模板：并行翻译的「翻译 → 验收 → 重派」流水线。
+// Workflow 脚本模板：并行翻译「bundle 一次读写 → 主控验收 → 失败组重派一次」。
 // 用法：主控先跑
+//   <PFX> -m ainiee_translate.scan work/cache.json --locked work/glossary.locked.json --mode pending   # 新词先定名进表
 //   <PFX> -m ainiee_translate.batch split work/cache.json --target 300 --out-dir work/par --context 20
-//   for 每组: <PFX> -m ainiee_translate.glossary filter --locked work/glossary.locked.json --for work/par/grp_N_src.json --out work/par/g_N.json
-// 然后 Workflow({ scriptPath: <本文件的副本>, args: { proj: "/abs/path/to/proj", skill: "/abs/path/to/skill", pfx: "PYTHONPATH=... python", groups: [1,2,3,...] } })
-// 脚本只产出「哪些组已通过 validate」；写回、verify、scan、export 仍由主控串行执行。
+//   <PFX> -m ainiee_translate.batch bundle work/cache.json work/par/grp_*_src.json --include work/user_prompt.md
+// 然后 Workflow({ scriptPath: <本文件的副本>, args: { proj: "/abs/path/to/proj", pfx: "PYTHONPATH=... python",
+//                 groups: ["1","2",...], model: "opus" } })
+// agent 只读 bundle、只写 trans_N.jsonl + newterms_N.txt；验收由一个便宜的 agent 跑 validate（不动 cache.json）。
+// 脚本返回通过的文件清单；merge-newterms 预览（查 CONFLICT）、batch write、verify/scan、export 仍由主控执行。
 export const meta = {
   name: 'ainiee-parallel-translate',
-  description: 'Translate chapter groups in parallel, validate each, re-dispatch failures once',
+  description: 'Translate chapter groups from read-once bundles, validate each, re-dispatch failures once',
   phases: [{ title: 'Translate' }, { title: 'Validate' }, { title: 'Retry' }],
 }
 
-const { proj, skill, pfx, groups } = args
-const RESULT = {
+const { proj, pfx, groups, model } = args
+const par = `${proj}/work/par`
+const TRANS = {
   type: 'object',
-  properties: {
-    group: { type: 'number' },
-    translated: { type: 'number' },
-    validate_ok: { type: 'boolean' },
-    hard: { type: 'array', items: { type: 'string' } },
-    warnings: { type: 'object' },
-    newterms: { type: 'array', items: { type: 'string' } },
-  },
-  required: ['group', 'translated', 'validate_ok'],
+  properties: { group: { type: 'string' }, segments: { type: 'number' }, newterms: { type: 'number' },
+                unsure: { type: 'array', items: { type: 'string' } } },
+  required: ['group', 'segments'],
+}
+const CHECK = {
+  type: 'object',
+  properties: { group: { type: 'string' }, ok: { type: 'boolean' }, hard: { type: 'array', items: { type: 'string' } } },
+  required: ['group', 'ok'],
 }
 
-const translatePrompt = (n, retryNote) => `
-你是文学译者，负责第 ${n} 组。先完整读：${proj}/work/STYLE_GUIDE.md、${proj}/work/BOOK_BIBLE.md（若存在）、
-${proj}/work/par/g_${n}.json（本组词汇表）、${proj}/work/user_prompt.md（若有）、${skill}/references/translation_rules.md、
-${proj}/work/par/grp_${n}_ctx.json（前文只读上下文）。
-输入：${proj}/work/par/grp_${n}_src.json。逐段 1:1 翻译；每 30–50 段用 Python 把 {"text_index","translated_text"} 逐行
-json.dumps(ensure_ascii=False) 追加到 ${proj}/work/par/trans_${n}.jsonl。人名/专名保留原文除非词汇表给了译名；<i>/<b> 标记成对保留；
-对话引号用 “ ”；与中文相邻的标点全角。保留为英文的新专名写 ${proj}/work/par/newterms_${n}.txt（每行一个）。
-译完跑：${pfx} -m ainiee_translate.batch validate ${proj}/work/par/grp_${n}_src.json ${proj}/work/par/trans_${n}.jsonl
-hard 非空就修到退出码 0（删旧行再追加，或整文件重写）。绝不碰 cache.json、绝不跑 batch write。
-${retryNote || ''}
-返回 StructuredOutput：group、translated（段数）、validate_ok、hard（kind 列表）、warnings（类别→计数）、newterms。`
+// 共用部分放最前、逐字相同：并行 agent 更容易命中 prompt 缓存。
+const translatePrompt = (g, note) =>
+  `你是出版级文学译者。读 ${par}/bundle_${g}.md（只读这一个文件），照其中的「交付」一节执行：` +
+  `一次 Write 写出全部译文与新词，不回读、不自校、不跑命令，绝不碰 cache.json。` +
+  `${note ? '\n' + note : ''}\n返回 StructuredOutput：group="${g}"、segments、newterms、unsure（≤5 条「段号：一句话」）。`
+
+const checkPrompt = g =>
+  `只跑这一条命令并据输出返回结果，不改任何文件：\n` +
+  `${pfx} -m ainiee_translate.batch validate ${par}/grp_${g}_src.json ${par}/trans_${g}.jsonl --cache ${proj}/work/cache.json\n` +
+  `返回 StructuredOutput：group="${g}"、ok（退出码 0）、hard（hard 里每项的 kind，segment 类附段号）。`
 
 phase('Translate')
 const results = await pipeline(
   groups,
-  g => agent(translatePrompt(g), { label: `translate:grp${g}`, phase: 'Translate', schema: RESULT }),
+  g => agent(translatePrompt(g), { label: `translate:${g}`, phase: 'Translate', schema: TRANS, model }),
   async (r, g) => {
-    if (r && r.validate_ok) return r
-    log(`grp ${g} failed validate (${r ? (r.hard || []).join(',') : 'no result'}); re-dispatching once`)
-    return agent(translatePrompt(g,
-      `上一轮 validate 未通过：${r ? JSON.stringify(r.hard) : 'agent 未返回'}。只需补齐/修正那些 index，其余已写行保持不动。`),
-      { label: `retry:grp${g}`, phase: 'Retry', schema: RESULT })
+    const v = await agent(checkPrompt(g), { label: `validate:${g}`, phase: 'Validate', schema: CHECK, model: 'haiku' })
+    if (v && v.ok) return { ...r, ok: true }
+    log(`${g} failed validate: ${v ? (v.hard || []).join(', ') : 'no result'} — re-dispatching once`)
+    const r2 = await agent(translatePrompt(g, `上一轮 validate 未通过：${v ? JSON.stringify(v.hard) : '无结果'}。` +
+      `只修这些段：读 bundle 与已写的 trans_${g}.jsonl，整文件重写一次。`),
+      { label: `retry:${g}`, phase: 'Retry', schema: TRANS, model })
+    const v2 = await agent(checkPrompt(g), { label: `revalidate:${g}`, phase: 'Retry', schema: CHECK, model: 'haiku' })
+    return { ...r2, ok: !!(v2 && v2.ok) }
   },
 )
 
-const ok = results.filter(Boolean).filter(r => r.validate_ok).map(r => r.group)
+const ok = results.filter(r => r && r.ok).map(r => r.group)
 const failed = groups.filter(g => !ok.includes(g))
 if (failed.length) log(`still failing after retry: ${failed.join(', ')} — fix by hand before writing`)
 return {
-  write_files: ok.map(g => `${proj}/work/par/trans_${g}.jsonl`),
-  newterm_files: ok.map(g => `${proj}/work/par/newterms_${g}.txt`),
+  write_files: ok.map(g => `${par}/trans_${g}.jsonl`),
+  newterm_files: ok.map(g => `${par}/newterms_${g}.txt`),
+  unsure: Object.fromEntries(results.filter(Boolean).map(r => [r.group, r.unsure || []])),
   failed,
-  warnings: Object.fromEntries(results.filter(Boolean).map(r => [r.group, r.warnings || {}])),
 }
