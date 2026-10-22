@@ -9,10 +9,10 @@ glossary is missing — the class of errors that slip past a clean verify run:
   never locked, so verify never knew to check them. Glossary-independent: it
   finds candidates to ADD to the glossary. Output is ranked candidates for
   human review (it cannot tell a real omission from a term you chose to
-  translate, e.g. Vulcan→瓦肯), not hard errors.
+  translate, e.g. Avalon→阿瓦隆), not hard errors.
 
 - `find_untranslated_terms`: the inverse case — a glossary term that DOES have a
-  target translation (e.g. Starfleet→星际舰队) but whose English source leaked
+  target translation (e.g. Coastguard→海岸警卫队) but whose English source leaked
   verbatim into some segments untranslated.
 
 - `find_stray_latin`: Latin tokens that appear in the translation but NOT in the
@@ -99,8 +99,8 @@ def discover_proper_nouns(items, locked=None):
       transliterated in one segment while correct in another). Act on these.
     - ``never_preserved`` — never kept verbatim anywhere; not in the glossary.
       Lower precision: this bucket also holds terms you legitimately translated
-      (e.g. Vulcan→瓦肯) alongside names transliterated everywhere
-      (e.g. Tenmei→天明). Eyeball, then lock real names into the glossary.
+      (e.g. Avalon→阿瓦隆) alongside names transliterated everywhere
+      (e.g. Tamsin→塔姆辛). Eyeball, then lock real names into the glossary.
 
     Per occurrence and across status 1 + 2.
     """
@@ -139,8 +139,8 @@ def discover_proper_nouns(items, locked=None):
 def find_untranslated_terms(items, locked):
     """The inverse of name-preservation: a glossary term that HAS a target-language
     translation (`dst`, not `keep_source`) but whose English `src` was left
-    verbatim in the translation of some segments (e.g. Starfleet→星际舰队 applied
-    everywhere except a few spots where "Starfleet" leaked through untranslated).
+    verbatim in the translation of some segments (e.g. Coastguard→海岸警卫队 applied
+    everywhere except a few spots where "Coastguard" leaked through untranslated).
 
     Returns [{src, dst, count, segments}], status 1 + 2, per occurrence.
     """
@@ -178,7 +178,7 @@ def find_stray_latin(items, locked=None, min_len=2):
     Per segment, case-insensitive: a token is flagged when it is not a word in
     that segment's source. This is the only test that actually catches the
     target class — a wrong-name/garbage token written where the source has
-    something else (``Vic``/``Sam``/``Sef`` in a passage about Bashir; ``Lt``
+    something else (``Vic``/``Sam``/``Sef`` in a passage about Okafor; ``Lt``
     for "the guard") — because such tokens collide with real source words under
     looser tests (``same`` ⊃ ``sam``), so substring/book-wide whitelists wrongly
     swallow them.

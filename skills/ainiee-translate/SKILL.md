@@ -388,10 +388,10 @@ verify 检查**已译（status 1）和已润色（status 2）**两类段（润�
 verify 是**词汇表执行器**，不是**发现器**。它只能发现「锁定表里登记过的人名」消失的情况，因此天然漏掉下面这些（实战中绝大多数漏网错误都属于此）：
 
 1. **词汇表覆盖不全（头号原因）**：verify 只查 `glossary.locked.json` 的 `characters`。**没进表的名字它根本不知道要查**——配角、地名、舰名，尤其当词汇表是从「上一本书」或 AiNiee 分析缓存里种出来、没针对当前书补全时。一份「2 个问题」的干净报告，往往只是因为表里恰好只有 2 个相关名字。→ **对策：词汇表必须随当前书补全**（见下方 `scan` 发现流程）。
-2. **整段成员检查，漏「同段对错并存」**：若同一段里某名字一处保留英文、另一处被音译（例：`Keru 看着…后来克鲁离开`），verify 看到「Keru 在」就不报。
-3. **「全程音译」的名字无信号**：若某名字在**全书每一处**都被音译（例 `Tenmei→天明`、`Rianu→里亚努`），它从没以英文出现过，"时而对时而错"的不一致信号为零。
-4. **区分不了「音译错误」与「合理代词省略 / 合法意译」**：补全词汇表后，那些把名字合理处理成「他/她」的段会被误报；`Vulcan→瓦肯` 这种合法意译它也无法识别。
-5. **完全不覆盖的错误类型**：①「张冠李戴」——表外名字被换成**别的**名字（`Dax→萨姆`、`Gard→Vic`）；② **丢空格的粘连词**漏进译文（`thenaiskosfragment`；epub 解析器那批已修，见 `repair`）；③ 整句**未翻译的英文残留**留在译文里；④ 模型**幻觉插入**的短乱码（顶替源文的 `Lt`/`Vic`）。
+2. **整段成员检查，漏「同段对错并存」**：若同一段里某名字一处保留英文、另一处被音译（例：`Hale 看着…后来黑尔离开`），verify 看到「Hale 在」就不报。
+3. **「全程音译」的名字无信号**：若某名字在**全书每一处**都被音译（例 `Tamsin→塔姆辛`、`Orvane→奥尔万`），它从没以英文出现过，"时而对时而错"的不一致信号为零。
+4. **区分不了「音译错误」与「合理代词省略 / 合法意译」**：补全词汇表后，那些把名字合理处理成「他/她」的段会被误报；`Avalon→阿瓦隆` 这种合法意译它也无法识别。
+5. **完全不覆盖的错误类型**：①「张冠李戴」——表外名字被换成**别的**名字（`Pell→萨姆`、`Brask→Vic`）；② **丢空格的粘连词**漏进译文（`thenaiskosfragment`；epub 解析器那批已修，见 `repair`）；③ 整句**未翻译的英文残留**留在译文里；④ 模型**幻觉插入**的短乱码（顶替源文的 `Lt`/`Vic`）。
 
 ### 步骤 7+：用 `scan` 发现词汇表缺口与解析瑕疵（补 verify 盲区）
 
@@ -405,9 +405,9 @@ verify 是**词汇表执行器**，不是**发现器**。它只能发现「锁�
 默认只打每类前 15 条（`--top`），`--json` / `--out` 拿全文。`pending` 见步骤 5+（开译前找新词）。
 
 - `discover`：找**不在词汇表、原文有但译文中消失**的专名（语言无关、不依赖词汇表、逐出现处、覆盖 status 1+2）。
-  - `inconsistent`（**高置信，优先处理**）：同名时而保留英文、时而消失——单点滑落 / 同段对错并存（如 Rio Grande、Keru）。
-  - `never_preserved`（**需人眼判断**）：从不以英文出现，含「全程被音译的真名」（Tenmei→天明、Rianu→里亚努）与「合法意译的术语」（Vulcan→瓦肯）两类混在一起。
-- `terms`：**反向漏译**——词汇表里有中文译名（`dst`、非 `keep_source`）的术语，却在个别段被留成了英文（`Starfleet`→星际舰队 全书都译了、唯独某段漏成 "Starfleet"）。
+  - `inconsistent`（**高置信，优先处理**）：同名时而保留英文、时而消失——单点滑落 / 同段对错并存（如 Rio Grande、Hale）。
+  - `never_preserved`（**需人眼判断**）：从不以英文出现，含「全程被音译的真名」（Tamsin→塔姆辛、Orvane→奥尔万）与「合法意译的术语」（Avalon→阿瓦隆）两类混在一起。
+- `terms`：**反向漏译**——词汇表里有中文译名（`dst`、非 `keep_source`）的术语，却在个别段被留成了英文（`Coastguard`→海岸警卫队 全书都译了、唯独某段漏成 "Coastguard"）。
 - `strays`：**模型幻觉插入**——译文里出现、但该段原文里没有的英文 token（凭空写出的错名 `Vic`/`Sam`/`Sef`、顶替"the guard"的 `Lt`）。是**复查列表非合格门**：含一贯保留的外星术语，需人眼筛；真信号是无来由的短错名。
 - `merges`：原文里**超长 Latin 串或 camelCase 跳变**的丢空格粘连词（`thenaiskosfragment`、`speciesDraco`、`TheAlexandria`）；默认 ≥18 字母或 camelCase（普通长词如 uncomfortable 不再上榜），调小 `--min-merge-len` 可挖更短的。
   - ⚠️ 这类粘连的**主因**曾是 epub 解析器逐片段 strip（`her <i>blade</i> fell` → `herbladefell`），已在解析层修复。新解析的项目里 `merges` 命中数应大幅下降；**存量项目**先跑 `repair --apply` 再看，剩下的才是源书本身的排版缺陷。
@@ -420,15 +420,15 @@ verify 是**词汇表执行器**，不是**发现器**。它只能发现「锁�
 ```
 
 `audit` 与 `batch write` 闸门用同一套检查，所以正常写入的项目 `empty`/`tag_mismatch` 应为 0；警告类按段号抽查。
-`glossary lint` 的 `alias_has_title`（如 `Admiral Janeway`）会让 verify 在头衔被翻译的每一处都误报，`alias_collides`（`Paris` 同时挂在 Owen Paris 与 Tom Paris 下）说明清洗时把两个人并了——改表再 verify。
+`glossary lint` 的 `alias_has_title`（如 `Admiral Hollis`）会让 verify 在头衔被翻译的每一处都误报，`alias_collides`（`Ashby` 同时挂在 Owen Ashby 与 Tom Ashby 下）说明清洗时把两个人并了——改表再 verify。
 
 **推荐校对闭环**：`verify`（清掉表内硬伤）→ `audit`（机械硬伤与风格）→ `glossary lint`（表结构）→ `scan --mode all`（`discover`→`inconsistent` 全改、`never_preserved` 挑真名；`terms`→补回被漏成英文的术语；`strays`→揪幻觉错名；`merges`→收粘连词）→ **把确认的真名/地名补进 `glossary.locked.json` 的 `characters`，保留英文的通名补进 `terms`（`keep_source:true`），有中文译名的术语进 `terms`（带 `dst`）** → 再 `verify`（这下表全了，能守住；忽略代词省略类误报）。改已有译文一律用 `batch apply`（保住状态、记来源）。
 
-> 经验：写自查脚本做名字比对时，先归一化撇号（弯/直撇号 `'`/`'` 统一），否则 `Mak'ala`、`Quark's`、`O'Brien` 会因撇号不同被误判为「消失」。verify/scan 内部已统一处理。
+> 经验：写自查脚本做名字比对时，先归一化撇号（弯/直撇号 `'`/`'` 统一），否则 `D'Arcy`、`Hank's`、`O'Brien` 会因撇号不同被误判为「消失」。verify/scan 内部已统一处理。
 
 ## 步骤 7.5：对抗性审核（可选，去 AI 味 + 抓润色漏掉的误译）
 
-润色只改表达，且同一个模型自审漏得多（Warpath 实测：Sonnet 润色后人工逐句校 4 章仍抓出 ~80 段，几乎全是词法/搭配层与真误译）。
+润色只改表达，且同一个模型自审漏得多（试点书实测：Sonnet 润色后人工逐句校 4 章仍抓出 ~80 段，几乎全是词法/搭配层与真误译）。
 本步先让 **Blind Reader** 只读中文、像读者一样标出读着别扭的地方（`review blind` / `review hints`），再把**找问题**（Reviewer，带源文逐条落实 flag，句式病整句重写）和**否决问题**（Challenger，奖励精度，但读者绊过的地方不许以「原译可通／偏好」否决）拆给互不通气的 Opus 实例，另加一个只读术语清单的
 Consistency auditor；主控只跑机械闸门：`review pre`（`offending` 恰好一次、红线改动即拒、定稿术语只加不删、`<i>/<b>` 成对、
 不动拉丁 token）→ `review final`（合并 verdicts：A 误译/B 硬伤自动进 `apply_X.json` → `batch apply`；C 翻译腔/D 不一致进 `review_ALL.md`
@@ -595,7 +595,7 @@ A: verify 只执行**锁定表里登记过的**人名，且无法识别张冠李
 ```bash
 <PFX> -m ainiee_translate.progress work/cache.json --watch     # 另开终端分屏：rich 实时面板，2 秒刷新
 <PFX> -m ainiee_translate.progress work/cache.json --once      # 渲染一次（斜杠命令 /ainiee-translate:progress 就是它）
-<PFX> -m ainiee_translate.progress work/cache.json --line      # 一行摘要：📖 Warpath 2391/2507 (95%) · ▶3 18/24 ▶4 25/25 · ✓1,2 · 4.1/min
+<PFX> -m ainiee_translate.progress work/cache.json --line      # 一行摘要：📖 The Long Road 2391/2507 (95%) · ▶3 18/24 ▶4 25/25 · ✓1,2 · 4.1/min
 <PFX> -m ainiee_translate.progress work/cache.json --json      # 完整快照（--out FILE 写文件）
 <PFX> -m ainiee_translate.progress work/cache.json --serve 8765 --open   # 本地网页看板：任何浏览器、Claude Code Desktop 都能开，2 秒轮询
 ```

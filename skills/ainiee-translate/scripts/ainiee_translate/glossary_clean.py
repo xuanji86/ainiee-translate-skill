@@ -1,8 +1,8 @@
 """Clean the raw seed into a locked working authority table:
 - strip leading honorifics/titles to get canonical bare names
 - merge name variants + apostrophe variants under one entry — but only when a
-  short form (e.g. "Paris") points at exactly ONE longer form; if two people
-  share the surname (Owen Paris / Tom Paris) the bare surname becomes its own
+  short form (e.g. "Ashby") points at exactly ONE longer form; if two people
+  share the surname (Owen Ashby / Tom Ashby) the bare surname becomes its own
   entry flagged ambiguous instead of being silently merged into one of them
 - persons keep their `render` (English by default; how a name is actually
   translated is the user's call, via the glossary or their own prompt)."""

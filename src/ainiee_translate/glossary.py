@@ -97,7 +97,7 @@ def lint_locked(locked: dict) -> list[dict]:
     owner: dict[str, str] = {}
     term_srcs = {normalize_apostrophes(t.get("src") or "").lower() for t in terms}
     # A leading token that prefixes the bare name of >= 2 different people is a title,
-    # not a given name ("Vedek Capril" / "Vedek Yevir"); so is one that is itself a term.
+    # not a given name ("Prior Aldous" / "Prior Benedek"); so is one that is itself a term.
     lead_count: dict[str, set] = {}
     for c in chars:
         canon_l = normalize_apostrophes(c.get("canonical") or "").lower()

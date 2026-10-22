@@ -12,7 +12,7 @@ PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" \
 读法：
 - `discover.inconsistent`（**高置信，优先改**）：同名时而保留英文、时而消失（单点滑落 / 同段对错并存）。
 - `discover.never_preserved`（**人眼判断**）：从不以英文出现，含「全程被音译的真名」与「合法意译的术语」两类，挑出真名。
-- `untranslated_terms`：有中文译名的术语被漏成英文（`Starfleet` 漏译）。
+- `untranslated_terms`：有中文译名的术语被漏成英文（`Coastguard` 漏译）。
 - `stray_latin`（**复查列表**）：译文里出现、原文没有的英文 token（幻觉错名 `Vic`/`Sam`/`Lt`）；含粘连词/术语噪声，眼判。
 - `merges`：原文丢空格的粘连词（`thenaiskosfragment`、`speciesDraco`）。
 

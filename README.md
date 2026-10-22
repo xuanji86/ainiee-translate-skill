@@ -148,7 +148,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 - **项目状态与留痕（1.15）** —— `decisions.json` 集中放已定口径、原文笔误、段级标记例外、本书 lint 规则，所有阶段共读；`batch apply` 是唯一的修正写回入口（保住每段状态、可只给补丁），`--source` 记进 `provenance.jsonl`，之后的审核想把语义修正改回去会被闸门拒收。
 - **省 token 的派发（1.15）** —— `batch bundle` 给每组一个「读一次、写一次」的文件（规则卡 + 词汇表 TSV + 前文 + 原文）；开译前 `scan --mode pending` 先找出新词定名；各组新词带译法，`merge-newterms` 报跨组冲突；复审只看改过的段（`--changed-since`）；`review ledger` 记每阶段 token。
 - **润色 pass** —— 可选二次加工，状态 `TRANSLATED → POLISHED`，导出自动采用润色文本。
-- **对抗性审核** —— 润色之后的第二道工序：Reviewer（奖励召回）与 Challenger（奖励否决）是互不通气的两个 Opus 实例，主控只跑机械闸门（子串级替换、红线改动即拒、定稿术语只加不删、标记/拉丁 token 不变）；A 误译/B 硬伤自动写回，C 翻译腔/D 不一致列表给人过目。Warpath 试点：召回 71–75%、精度 87–91%，抓到人工校对漏掉的真误译。
+- **对抗性审核** —— 润色之后的第二道工序：Reviewer（奖励召回）与 Challenger（奖励否决）是互不通气的两个 Opus 实例，主控只跑机械闸门（子串级替换、红线改动即拒、定稿术语只加不删、标记/拉丁 token 不变）；A 误译/B 硬伤自动写回，C 翻译腔/D 不一致列表给人过目。试点书：召回 71–75%、精度 87–91%，抓到人工校对漏掉的真误译。
 
 ---
 
@@ -327,7 +327,7 @@ CJK 相关检查只对含 CJK 的译文生效。`glossary lint` 则查表本身�
 
 主控只跑机械闸门：`review pre`（`offending` 在现译中恰好一次、红线**改动即拒**、定稿术语只加不删、`<i>/<b>` 成对、不动拉丁 token）
 → `review final`（合并 verdicts：A/B 进 `apply_X.json` → `batch apply`；C/D 进 `review_ALL.md` 给人勾选 → `review pick`）。
-先在人工校对过的章节上 `review benchmark` + `score` 打分再铺全书（Warpath 试点：召回 71–75%、Challenger 精度 87–91%，
+先在人工校对过的章节上 `review benchmark` + `score` 打分再铺全书（试点书：召回 71–75%、Challenger 精度 87–91%，
 且报出而人工没改的段抽查多数是人工漏掉的真问题）。协议、`config.json` 红线格式、prompt 模板见
 `skills/ainiee-translate/references/adversarial_review.md` / `review_taxonomy.md` / `review_prompts.md`；斜杠命令 `/ainiee-translate:review <起-止段号>`。
 

@@ -14,10 +14,10 @@ def _book(files):
     return CacheProject(files={"b.epub": f}, project_id="t")
 
 
-BOOK = [("ncx", ["Warpath", "1"]), ("rev", ["Praise for the Work of X", "great"]), ("ded", ["For my mother."]),
+BOOK = [("ncx", ["The Long Road", "1"]), ("rev", ["Praise for the Work of X", "great"]), ("ded", ["For my mother."]),
         ("epig", ["What though the field be lost?"]), ("fm_1", ["Historian’s Note", "This story takes place…"]),
-        ("part1", ["WHAT FATES IMPOSE"]), ("date1", ["JUNE 2380"]), ("ch_1", ["1", "Kira ran."]),
-        ("ch_2", ["Chapter Two", "Vaughn ran."]), ("epi", ["Epilogue", "The end."]),
+        ("part1", ["WHAT THE TIDE BRINGS"]), ("date1", ["JUNE 1897"]), ("ch_1", ["1", "Mara ran."]),
+        ("ch_2", ["Chapter Two", "Corin ran."]), ("epi", ["Epilogue", "The end."]),
         ("bm_2", ["Acknowledgments", "Thanks."]), ("bm_3", ["About the Author", "He writes."])]
 
 

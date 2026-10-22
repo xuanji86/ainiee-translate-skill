@@ -92,7 +92,7 @@ done
     ```
   - **全新的书**：翻译前先派 1–2 个便宜 agent 通读各组源文，按 `references/book_bible_template.md` 抽**事实**：
     每个角色的性别、实衔、亲属关系、舰名与舰级、每章一句梗概。
-  Janeway 上将/中将、Irene 姑妈/姨妈这类错误，靠事后校对要改上百段；靠 bible 在译前就定死。
+  Hollis 上将/中将、Irene 姑妈/姨妈这类错误，靠事后校对要改上百段；靠 bible 在译前就定死。
 
 ### 3.5 开一个进度面板（可选，另一个终端）
 
@@ -146,7 +146,7 @@ done
   ```
   **分波时每波收工就做这一段**（而不是整本译完才做）：merge 进去的新词、scan 揪出的问题，下一波 agent 直接受益。
 - `verify` 的 `name_not_preserved` 常见假阳性：城市名/同名词（Paris=巴黎）、含头衔的别名。`glossary lint` 会把
-  `alias_has_title`（如 `Admiral Janeway`）和 `alias_collides`（两人共用 `Paris`）先揪出来，改表再 verify。
+  `alias_has_title`（如 `Admiral Hollis`）和 `alias_collides`（两人共用 `Ashby`）先揪出来，改表再 verify。
 
 `translation_status=7` 的段是排除项，无需翻译、不必写回。全书译完的判据是 `batch read` 返回 `[]`。
 

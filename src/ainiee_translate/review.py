@@ -266,7 +266,7 @@ def pre(paths: Paths, rules: Rules, files: list[str]) -> list[dict]:
 
 def needs_challenge(f: dict, min_sev: int = 3, sample: float = 0.0) -> str:
     """Tiering rule -> why this finding goes to the Challenger ('' = auto-accept).
-    Destiny (7357 gated findings): of 5034 findings backed by a Blind Reader flag the Challenger
+    A trilogy run (7357 gated findings): of 5034 findings backed by a Blind Reader flag the Challenger
     rejected 5 (0.1%); of 2323 without one it rejected 152 (6.5%, mostly C/severity-1 and A/severity-1
     'preferences'). So a flag is independent corroboration and only the uncorroborated rest needs a veto."""
     if f.get("_force_challenge") or f.get("redline_waiver"):
@@ -440,7 +440,7 @@ def final(paths: Paths, rules: Rules, groups: list[str]) -> list[dict]:
 # --------------------------------------------------------- per-group rules ----
 EX_STOP = {"the", "and", "for", "with", "that", "this", "from", "into", "have", "they", "them", "their", "then",
            "than", "what", "when", "were", "will", "your", "said", "just", "like", "been", "only", "over", "some",
-           "PADD", "yes", "not", "but", "all", "one", "out", "his", "her", "him", "she"}
+           "HUD", "yes", "not", "but", "all", "one", "out", "his", "her", "him", "she"}
 
 
 def rules_slice(paths: Paths, groups: list[str], locked: str | None, examples: list[str]) -> list[dict]:
