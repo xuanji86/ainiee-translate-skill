@@ -5,7 +5,7 @@
 **Agent 原生的长篇翻译管线** —— 让编码 agent 本身当翻译引擎，端到端译完一本书。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.15.0-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
+[![Version](https://img.shields.io/badge/version-1.16.0-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue.svg)](pyproject.toml)
 [![Tests](https://img.shields.io/badge/tests-90%20passing-brightgreen.svg)](tests/)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://claude.com/claude-code)
@@ -147,6 +147,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 - **多 agent 并行** —— 风格锁定后可派多个 subagent 并发翻不同章节（实测 11 章 1704 段 / 7 agent / ~9 分钟）。编排全是命令：`batch split` 按章节边界分组并附前文上下文，`glossary filter` 给每组一份瘦身词汇表（66 KB → ~5 KB），subagent 边译边写 JSONL，`batch validate` 逐组验收，`batch write` 一次写回全部。铁律：subagent 只产出译文文件，**由主控写回**。
 - **项目状态与留痕（1.15）** —— `decisions.json` 集中放已定口径、原文笔误、段级标记例外、本书 lint 规则，所有阶段共读；`batch apply` 是唯一的修正写回入口（保住每段状态、可只给补丁），`--source` 记进 `provenance.jsonl`，之后的审核想把语义修正改回去会被闸门拒收。
 - **省 token 的派发（1.15）** —— `batch bundle` 给每组一个「读一次、写一次」的文件（规则卡 + 词汇表 TSV + 前文 + 原文）；开译前 `scan --mode pending` 先找出新词定名；各组新词带译法，`merge-newterms` 报跨组冲突；复审只看改过的段（`--changed-since`）；`review ledger` 记每阶段 token。
+- **精简对抗审核（1.16）** —— `review segs --mode slim`：A/B 全部送 Challenger（过关即写回），有盲读 flag 的 C 自动放行进过目表；Reviewer 直接写 JSONL 跑只读的 `review check`，不再写 builder；派发改滚动。
 - **润色 pass** —— 可选二次加工，状态 `TRANSLATED → POLISHED`，导出自动采用润色文本。
 - **对抗性审核** —— 润色之后的第二道工序：Reviewer（奖励召回）与 Challenger（奖励否决）是互不通气的两个 Opus 实例，主控只跑机械闸门（子串级替换、红线改动即拒、定稿术语只加不删、标记/拉丁 token 不变）；A 误译/B 硬伤自动写回，C 翻译腔/D 不一致列表给人过目。试点书：召回 71–75%、精度 87–91%，抓到人工校对漏掉的真误译。
 

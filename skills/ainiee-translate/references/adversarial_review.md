@@ -9,8 +9,8 @@ ch2–5 仍抓出 ~80 段问题——几乎全是词法/搭配层（非词、固
 | 角色 | 模型 | 读 | 写 | 激励 |
 |---|---|---|---|---|
 | **Blind Reader** | Opus | **只读中文**（`groups/blind_X.json`）+ 分类清单 + `EXAMPLES.md` + 红线 | `flags_X.jsonl` | **奖励召回**：读者读着绊一下就标；不看原文，不必给改法 |
-| **Reviewer** | Opus | 本组源文+现译、`hints_X.json`（盲读标记+源文）、分类清单、`EXAMPLES.md`、红线/风格指南、前几段语境 | `findings_X.jsonl` | **奖励召回**：每条 flag 都要处理；用词病改词，句式病**整句重写**；每条引用源文证据 |
-| **Challenger** | Opus（另一实例） | `challenge_X.jsonl` + 涉及段 + 红线 + `rules_X.json`/`EXAMPLES.md` + 盲读标记 | `verdicts_X.jsonl` | **奖励否决**：违反红线 / 引入新错 → reject；「原译没错／偏好」只在读者没绊过时才能用；可 amend |
+| **Reviewer** | Opus | 本组源文+现译、`hints_X.json`（盲读标记+源文）、分类清单、`EXAMPLES.md`、红线/风格指南、前几段语境 | `findings_X.jsonl`（直接写，`review check` 自检） | **奖励召回**：每条 flag 对照源文判断；A/B 都写、C 只写 sev≥2、不写 D；用词病改词，句式病**整句重写**；每条引用源文证据 |
+| **Challenger** | Opus（另一实例） | `challenge_X.jsonl` + 涉及段 + 红线 + `rules_X.json`/`EXAMPLES.md` + 盲读标记 | `verdicts_X.jsonl` | **奖励否决**：违反红线 / 引入新错 → reject；「原译没错」对 A 类总能用，对有 flag 的 B/C 不能用；可 amend |
 | **Consistency auditor** | Opus ×1 | `review inventory` 生成的术语清单 | `findings_D.jsonl` | 只判「同一英文词该不该一个译法」 |
 | **主控** | — | 全部产物 | `apply_X.json`、`review_X.md`、`review_log.jsonl` | `review pre/final` 闸门 → A/B `batch apply --source adversarial`，C/D 列给用户 |
 
@@ -38,13 +38,42 @@ Blind flag 93% 被 Reviewer 落成 finding，69% 的 finding 来自 flag——**
   其余（无 flag、severity 3、`latin_change`、`redline_waiver`）+ 按 id 哈希抽的 `--sample`（默认 5%）写 `challenge_X.jsonl`
   给 Challenger。`review final` 先读 auto 再用真 verdict 覆盖。三部曲回放：7357 → **2745** 条送审（−63%），
   自动放行里历史上最多漏 5 条坏改动。
-- 不加 `--tier` 时 `challenge_X.jsonl` = 全部 findings，行为同旧版。
+- 不加 `--tier`/`--mode` 时 `challenge_X.jsonl` = 全部 findings，行为同旧版。
 - 前 3–5 组跑完就 `review stats`；某一格否决率 > 2% 就把它移回送审（调 `--min-sev` 或不用 `--tier`）。
+- ⚠ 上表的 0.1% **不能**当作「有 flag 的条目没问题」的证据：同一协议禁止 Challenger 以第 1、4 问（原译没错／偏好）否决有 flag
+  的条目，否决率低有一部分是规则造成的；它也不衡量 accept 的条目改法本身对不对。v1.16 的数据见下节，**新书默认用 `--mode slim`**。
 - `review rules gN`：从 `glossary.locked.json` 与 `EXAMPLES.md` 抽出与本组源文相关的条目 → `rules_gN.json`，agent 读它而不是
   整份裁定文件。裁定文件越长越值：纯口味病例（无英文专名）总是保留，专名裁定只给出现它的组。
 - 模型：Reviewer 用 Opus（Sonnet 召回明显低）；Challenger 只审无 flag 的少数条目后，每组负载约为原来的 1/3，可以并两组给一个实例。
   Blind Reader / Challenger 换小模型**未做基准**，要换先在人工校过的章节上 `benchmark/score`。
 - 组大小：`--target 140` 是按 Reviewer 上下文定的，别为省固定开销加大——Reviewer 的输出（builder 里的整句重写）才是大头。
+
+## 精简协议（v1.16，《星际迷航 下一代：抵抗》1960 段 / 16 组实测）
+
+按 v1.13 协议跑了 g1–g4 后精简，后 12 组按精简版跑完：
+
+| 观察 | 数据 | 改动 |
+|---|---|---|
+| C/D 类 severity 1 默认不采用，却占 Reviewer 产出近三成 | g1–g4 共 472 条 finding，C/D sev1 **137 条（29%）** | Reviewer 只写 C sev≥2，不写 D（全书一致性审负责），`review check` 拦 C sev1 |
+| sev1 的盲读 flag 不能砍 | 对照源文后，sev1 flag 引出 **19 条 A 类 sev2 误译** | Reviewer 仍要逐条看 sev1 flag，只是不够门槛的不必写 |
+| 有 flag 的 A/B 免审会把错的改法写进书里 | g1–g2 有 flag 的 A/B 送审 **42 条，12 条被 amend**（问题是真的，改法本身有错）；按 `--tier` 它们会原样自动写回 | `--mode slim`：A/B 全部送审 |
+| 有 flag 的 C 送审意义不大 | C 类无论如何进过目表，用户会看 | 有 flag 的 C 自动 accept，无 flag 的 C 仍送审 |
+| 全书否决率 | 有 flag **0.9%**（661 条中 6），无 flag **46.1%**（152 条中 70）；无 flag 的 A sev1 82%、B sev1 83% | 无 flag 条目照旧必审 |
+| Challenger 对有 flag 的 A 类只能「核改法」不能「核问题」 | 盲读看不到原文，读着别扭 ≠ 误译成立 | 有 flag 的 **A 类**也可以以「原译没错」否决；B/C 仍只能以红线／引入新错否决 |
+| 分批派发空等 | 按波次等最慢的那个，约 **25%** 的时间在空等 | 滚动派发：保持 ~5 个在跑，完成一个补一个，一组落地就推进该组下一步 |
+| Reviewer 写 builder 脚本 | 每组一个 `build_findings_gN.py`，断言逻辑与闸门重复且常写错 | Reviewer 直接写 JSONL，跑只读的 `review check <cache> gN`（同一套 `check()`/`Rules`）直到 OK |
+
+`review segs --mode slim` 的分配（`needs_challenge(mode="slim")`）：
+
+| finding | 去向 |
+|---|---|
+| `redline_waiver` / 删了词汇表定稿词的 A 类（`_force_challenge`） | 送审（waiver） |
+| `latin_change` | 送审（latin），A 类过关后仍转人工 |
+| A / B（有无 flag 都一样） | **送审**（ab） |
+| C / D 有 flag | 自动 accept（`verdicts_X.auto.jsonl`），进过目表 |
+| C / D 无 flag | 送审（unflagged） |
+
+旧的 `--tier`（v1.13）保留为选项，适合 Challenger 预算很紧、又能接受「有 flag 的 A/B 改法不复核」的场合。
 
 **审前先定政策**：全书性的译法选择（种族名音译与否、集体智慧体的代词、军衔体系、外语短句）必须在审校开工前定完，
 见 `book_bible_template.md` §5。审完再定 = 再派一轮 agent 全书返工；能用正则落实的一律交给机械脚本，不要让 Reviewer 逐组发现。
@@ -77,8 +106,8 @@ review/
   config.json          项目规则（见下）；没有也能跑（只用词汇表 dst 当定稿术语）
   groups/grp_X_src.json  batch split --stage review 的产物（含 translated_text）+ grp_X_ctx.json
   findings_X.jsonl     Reviewer 产出 → findings_X.pre.jsonl（过闸门）/ rejected_X.jsonl
-  challenge_X.jsonl    送 Challenger 的 findings（--tier 时只是一部分）；segs_X.json 为其涉及的段
-  verdicts_X.auto.jsonl  --tier 自动放行的 accept（final 时被真 verdict 覆盖）
+  challenge_X.jsonl    送 Challenger 的 findings（--mode slim / --tier 时只是一部分）；segs_X.json 为其涉及的段
+  verdicts_X.auto.jsonl  自动放行的 accept（slim：有 flag 的 C/D；tier：有 flag 的低严重度；final 时被真 verdict 覆盖）
   verdicts_X.jsonl     Challenger 产出
   rules_X.json         本组相关的词汇表条目 + 裁定条目（review rules）
   stats.md             各工序产出率（review stats）
@@ -104,8 +133,13 @@ review/
   「看似不一致其实故意」的写法（并存的英/中译名、军衔写法、舰名带号…）。第一版用「提及即拒」误杀了
   `竖发→刺猬似短发`（子串里带着没动的「安全官」），别走回头路。
 - `settled`：定稿术语，**只许加不许删**——改向定稿是对的（数据恢复队→组），从 offending 里删掉不行。
-  `glossary_settled`（默认 true）把词汇表所有 `dst` 也当定稿术语；语境依赖的词条（`crew` 舰上「船员」/站上「站上人员」）
-  会因此误拒一两条，看 `rejected_X.jsonl` 里的 `E_settled_removed` 手工放行即可。
+  `glossary_settled`（默认 true）把词汇表所有 `dst` 也当定稿术语。两条放行规则（v1.16）：
+  1. 换成**包含原词的更长定稿词**不算删除（`医生→首席医生`、`博格→博格女王`）；定稿词按长度优先匹配。
+  2. 词汇表 `dst` 常是脱离语境的短词，它本身就可能是误译（`Doctor→医生` 撞上 `chief medical officer`；泛指的
+     `an admiral` 被译成军衔「上将」）。**A 类** finding 可以删掉**只来自词汇表**的定稿词（`config.json` 的 `settled` 仍是硬约束），
+     这种条目带 `_settled_override` 且**永远送 Challenger**。《抵抗》里 `首先是医生→首先是首席医疗官`、`上将的访问码→将官的访问码`
+     原先都被 `E_settled_removed` 误拦，只能主控强写。
+  B/C 类改掉语境依赖的词条（`crew` 舰上「船员」/站上「站上人员」）仍会被拒，看 `rejected_X.jsonl` 里的 `E_settled_removed` 手工放行。
 - `forbid`：绝不允许引入的字符（默认「」和 ASCII 引号）。`soft_block`：不得新增的 audit 软问题（默认半角标点/「」/…）。
 - `term_only` / `norm`：只给 `benchmark` 用——人工校对期间顺手做的批量定名替换（舰长→上校）不算「实质修改」，
   两边文本套同一映射后相同就剔出分母。
@@ -124,13 +158,14 @@ review/
 # 0.5 盲读：去掉源文，每组一个 Blind Reader（Opus 并发）→ flags_gN.jsonl；校验并挂回源文 → hints_gN.json
 <PFX> -m ainiee_translate.review blind <PROJ>/work/cache.json g1 g2
 <PFX> -m ainiee_translate.review hints <PROJ>/work/cache.json $REV/flags_g1.jsonl $REV/flags_g2.jsonl
-# 1. Wave 1：每组一个 Reviewer（Opus，同一条消息并发；读 hints_gN.json；prompt 见 review_prompts.md）
+# 1. 每组一个 Reviewer（Opus，滚动派发；读 hints_gN.json；prompt 见 review_prompts.md）；Reviewer 自己跑只读检查到 OK：
+<PFX> -m ainiee_translate.review check <PROJ>/work/cache.json g1          # exit 1 = 有错，逐行列出
 <PFX> -m ainiee_translate.review log <PROJ>/work/cache.json --stage reviewer --group g1 --model claude-opus-5 --agent rev-g1 --file $REV/findings_g1.jsonl
 # 2. 预闸门 + 抽 Challenger 要看的段
 <PFX> -m ainiee_translate.review pre  <PROJ>/work/cache.json $REV/findings_g1.jsonl $REV/findings_g2.jsonl
-<PFX> -m ainiee_translate.review segs <PROJ>/work/cache.json --tier $REV/findings_g1.pre.jsonl $REV/findings_g2.pre.jsonl
+<PFX> -m ainiee_translate.review segs <PROJ>/work/cache.json --mode slim $REV/findings_g1.pre.jsonl $REV/findings_g2.pre.jsonl
 <PFX> -m ainiee_translate.review inventory <PROJ>/work/cache.json --range 438-719      # → inventory.json
-# 3. Wave 2：每组一个 Challenger（读 challenge_gN.jsonl）+ 一个 Consistency auditor（并发）
+# 3. 每组一个 Challenger（读 challenge_gN.jsonl；该组 segs 一出就派，不等别组）+ 全部 Reviewer 落地后一个 Consistency auditor
 #    前几组落地后：<PFX> -m ainiee_translate.review stats <PROJ>/work/cache.json g1 g2 …   # → stats.md，看分级是否安全
 # 4. 终闸门：合并 verdicts → apply_X.json（A/B）+ review_X.md（C/D）
 <PFX> -m ainiee_translate.review pre   <PROJ>/work/cache.json $REV/findings_D.jsonl
@@ -168,6 +203,6 @@ review/
 `score` 里「报了但人工没改」的段要抽读——试点书里这一类多数是人工漏掉的真问题，人工基准本身有缺口。
 
 - 备份轮转：`cache.json.bak.*` 默认只留 10 个，人工校对开始前**手动**复制一份 `cache.json.pre_review`（非 `.bak.` 后缀不会被清）。
-- 组大小 140 段左右；一波 5 个 Opus 顺畅。Reviewer ~125k、Blind ~75k token 一组；Challenger 全审 ~100k，`--tier` 后约 1/3。
+- 组大小 140 段左右；同时 5 个 Opus 顺畅，**滚动派发**（完成一个补一个），别按波次等齐。Reviewer ~125k、Blind ~75k token 一组；Challenger 全审 ~100k，`--tier` 后约 1/3。
 - 清单里的病例会泄露答案：项目病例放 `EXAMPLES.md`（config `leak_files`），基准打分看「剔除泄露段」那行。
 - C/D 过目表按 severity 排序，severity 1 默认不改；用户否掉的自动应用项，用 `pick` 的反向（把 `offending`/`proposed` 对调写一条 finding）或直接手写 apply 文件回退，并 `review log --stage revert`。
