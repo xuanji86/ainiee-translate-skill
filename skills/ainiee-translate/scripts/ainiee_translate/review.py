@@ -10,8 +10,10 @@ main agent runs between them so that no finding reaches cache.json un-gated:
   hints      validate the Blind Reader's flags_X.jsonl -> hints_X.json (flagged segments + source)
              for the Reviewer; bad quotes -> rejected_flags_X.jsonl
   pre        mechanical gate on Reviewer findings -> findings_X.pre.jsonl / rejected_X.jsonl
+  check      read-only lint of a Reviewer's findings_X.jsonl (brief rules + this gate); exit 1 on errors
   segs       the findings a Challenger must judge -> challenge_X.jsonl + their segments -> segs_X.json;
-             --tier auto-accepts Blind-flag-corroborated findings (verdicts_X.auto.jsonl)
+             --mode slim: every A/B challenged, flagged C/D auto-accepted (verdicts_X.auto.jsonl);
+             --tier (v1.13): Blind-flag-corroborated findings below --min-sev auto-accepted
   rules      per-group slice of glossary + rulings bullets -> rules_X.json (agents read this, not
              the whole EXAMPLES.md)
   stats      per-stage yield -> stats.md (is each stage / tier worth its tokens?)
@@ -33,8 +35,10 @@ verdicts_X.jsonl from Challengers, config.json with the project's rules:
                             # ("change forbidden, mention allowed"); an entry may be
                             # {"re": regex, "waivable": true}: a finding with "redline_waiver"
                             # may change it and is always challenged
-   "settled": [regex…],     # settled renderings: may be added, never removed
-   "glossary_settled": true,# also treat every glossary `dst` as settled (default)
+   "settled": [regex…],     # settled renderings: may be added, never removed (a longer settled
+                            # rendering containing it, 医生 -> 首席医生, counts as kept)
+   "glossary_settled": true,# also treat every glossary `dst` as settled (default); an A finding may
+                            # drop a glossary-only dst (always challenged)
    "forbid": "[「」\\"]",    # characters proposed text must never introduce
    "soft_block": [...],     # audit soft kinds that must not newly appear
    "term_only": [[a, b]…],  # benchmark: edits that are only these swaps don't count
@@ -142,10 +146,15 @@ class Rules:
         # is always sent to the Challenger and never auto-accepted.
         self.redline_hard = [re.compile(r if isinstance(r, str) else r["re"]) for r in cfg.get("redline", [])
                              if isinstance(r, str) or not r.get("waivable")]
-        settled = list(cfg.get("settled", []))
-        if cfg.get("glossary_settled", True):
-            settled += [re.escape(t) for t in sorted(set(glossary_dst), key=len, reverse=True)]
+        # longest first, so 博格女王 is matched whole rather than as 博格 (see settled_removed)
+        settled = sorted(set(cfg.get("settled", [])), key=len, reverse=True)
+        gl = sorted({re.escape(t) for t in glossary_dst} if cfg.get("glossary_settled", True) else (),
+                    key=len, reverse=True)
         self.settled = re.compile("|".join(settled)) if settled else NEVER
+        # glossary `dst` are settled too, but a context-free dst (Doctor -> 医生) is sometimes the
+        # mistranslation itself (chief medical officer -> 医生): an A finding may remove one (always challenged)
+        self.settled_gl = re.compile("|".join(gl)) if gl else NEVER
+        self.settled_all = re.compile("|".join(sorted(settled + gl, key=len, reverse=True))) if settled or gl else NEVER
         forbid = cfg.get("forbid", r"[「」\"]")
         self.forbid = re.compile(forbid) if forbid else NEVER
         self.soft_block = set(cfg.get("soft_block", DEFAULT_SOFT_BLOCK))
@@ -153,16 +162,27 @@ class Rules:
         self.norm = [(re.compile(p), r) for p, r in cfg.get("norm", [])]
         self.leak_files = list(cfg.get("leak_files", DEFAULT_LEAK_FILES))
 
-    def violation(self, off: str, prop: str, waiver: bool = False) -> str:
+    def settled_removed(self, off: str, prop: str) -> set[str]:
+        """Settled renderings in `off` that `prop` drops. Replacing one with a longer settled rendering
+        that contains it (医生 -> 首席医生, 博格 -> 博格女王) is not a removal -- but only a rendering
+        `prop` newly introduces counts, so 博格女王 already standing in `off` cannot cover a dropped 博格."""
+        was, kept = set(self.settled_all.findall(off)), set(self.settled_all.findall(prop))
+        new = kept - was
+        return {t for t in was - kept if not any(t in k for k in new)}
+
+    def violation(self, off: str, prop: str, waiver: bool = False, category: str = "") -> tuple[str, set[str]]:
+        """-> (reason or '', glossary-only settled renderings an A finding is allowed to drop)."""
         if self.forbid.search(prop):
-            return "forbid_char"
+            return "forbid_char", set()
         if collections.Counter(self.redline.findall(off)) != collections.Counter(self.redline.findall(prop)):
             if not waiver or any(collections.Counter(rx.findall(off)) != collections.Counter(rx.findall(prop))
                                  for rx in self.redline_hard):
-                return "E_redline"
-        if set(self.settled.findall(off)) - set(self.settled.findall(prop)):
-            return "E_settled_removed"
-        return ""
+                return "E_redline", set()
+        gone = self.settled_removed(off, prop)
+        if gone and not (category == "A" and all(self.settled_gl.fullmatch(t) and not self.settled.fullmatch(t)
+                                                 for t in gone)):
+            return "E_settled_removed", set()
+        return "", gone
 
     def normalize(self, s: str) -> str:
         """Symmetric: apply to both old and new text; a diff that vanishes is term-only."""
@@ -196,41 +216,102 @@ def load_rules(paths: Paths, locked: str | None = None) -> Rules:
 
 
 # ---------------------------------------------------------------- gate ----
-def check(f: dict, seg: dict | None, rules: Rules) -> tuple[bool, str, str | None]:
-    """Gate one finding against the text it was written for. -> (ok, reason, new_text)."""
+def check(f: dict, seg: dict | None, rules: Rules) -> tuple[bool, str, str | None, list[str]]:
+    """Gate one finding against the text it was written for. -> (ok, reason, new_text, settled_override);
+    settled_override = glossary-only settled renderings an A finding drops (the caller must challenge it)."""
     req = ("id", "text_index", "category", "offending", "proposed")
     if any(k not in f or f[k] in (None, "") for k in req):
-        return False, "missing_field", None
+        return False, "missing_field", None, []
     if f["category"] not in ("A", "B", "C", "D"):
-        return False, "bad_category", None
+        return False, "bad_category", None, []
     if seg is None:
-        return False, "unknown_index", None
+        return False, "unknown_index", None, []
     src, old = seg["source_text"], seg["translated_text"]
     off, prop = f["offending"], f["proposed"]
     n = old.count(off)
     if n != 1:
-        return False, f"ambiguous({n})", None
-    why = rules.violation(off, prop, waiver=bool(f.get("redline_waiver")))
+        return False, f"ambiguous({n})", None, []
+    why, override = rules.violation(off, prop, waiver=bool(f.get("redline_waiver")), category=f["category"])
     if why:
-        return False, why, None
+        return False, why, None, []
     h_off, h_prop = len(HAN.findall(off)), len(HAN.findall(prop))
     if h_off >= REWRITE_MIN and not (REWRITE_RATIO[0] <= h_prop / h_off <= REWRITE_RATIO[1]):
-        return False, f"rewrite_length({h_prop}/{h_off})", None
+        return False, f"rewrite_length({h_prop}/{h_off})", None, []
     new = old.replace(off, prop, 1)
     hard, soft_new = audit.lint_pair(src, new, int(f["text_index"]) in rules.tag_exc)
     if hard:
-        return False, "tag:" + ",".join(hard), None
+        return False, "tag:" + ",".join(hard), None, []
     _, soft_old = audit.lint_pair(src, old)
     added = (set(soft_new) - set(soft_old)) & rules.soft_block
     if added:
-        return False, "soft:" + ",".join(sorted(added)), None
+        return False, "soft:" + ",".join(sorted(added)), None, []
     if collections.Counter(LATIN.findall(off)) != collections.Counter(LATIN.findall(prop)):
         if not (f.get("latin_change") and f["category"] == "A"):
-            return False, "name_touch", None
+            return False, "name_touch", None, []
     back = [x for x in rules.protected.get(int(f["text_index"]), ()) if x in new and x not in old]
     if back:
-        return False, "E_reverts_fix", None
-    return True, "", new
+        return False, "E_reverts_fix", None, []
+    return True, "", new, sorted(override)
+
+
+def _seg(segs: dict[int, dict], ti) -> dict | None:
+    """The segment a finding/flag points at; None for a missing or non-integer text_index."""
+    return segs.get(int(ti)) if isinstance(ti, int) or (isinstance(ti, str) and ti.isdigit()) else None
+
+
+def _flag_ids(paths: Paths, g: str) -> set | None:
+    """Blind Reader flag ids of group g; None when there is no flags file."""
+    fp = paths.f(f"flags_{g}.jsonl")
+    return {x.get("id") for x in read_jsonl(fp)} if os.path.exists(fp) else None
+
+
+def check_file(paths: Paths, rules: Rules, g: str, path: str | None = None) -> list[str]:
+    """Read-only lint of a Reviewer's findings_<g>.jsonl before `pre`: the Reviewer brief's own rules
+    (fields, A/B/C only, no C severity 1, source_evidence on A/C, known flag ids, unique ids) plus the
+    full gate (`check`). The Reviewer writes JSONL directly and runs this until it prints OK -- no
+    builder script. Writes nothing. -> error lines (empty = OK)."""
+    path = path or paths.f(f"findings_{g}.jsonl")
+    segs = paths.group_src(g)
+    flag_ids = _flag_ids(paths, g)
+    errs, seen, cat, sev = [], set(), collections.Counter(), collections.Counter()
+    with open(path, encoding="utf-8") as fh:
+        lines = fh.readlines()
+    for ln, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            f = json.loads(line)
+        except ValueError as e:
+            errs.append(f"L{ln}: bad JSON ({e})")
+            continue
+        i = f.get("id") or f"L{ln}"
+        miss = [k for k in ("id", "text_index", "category", "severity", "offending", "proposed", "reason")
+                if f.get(k) in (None, "")]
+        if miss:
+            errs.append(f"{i}: missing {miss}")
+            continue
+        if i in seen:
+            errs.append(f"{i}: duplicate id")
+        seen.add(i)
+        c, s = f["category"], f["severity"]
+        if s not in (1, 2, 3):
+            errs.append(f"{i}: severity must be 1/2/3")
+        if c == "D" and g != "D":
+            errs.append(f"{i}: no D findings (cross-segment consistency is the Consistency auditor's)")
+        elif c == "C" and s == 1:
+            errs.append(f"{i}: drop C severity 1 (not adopted by default)")
+        if c in ("A", "C") and not f.get("source_evidence"):
+            errs.append(f"{i}: source_evidence required for {c}")
+        if flag_ids is not None and set(f.get("flags") or ()) - flag_ids:
+            errs.append(f"{i}: unknown flags {sorted(set(f['flags']) - flag_ids)}")
+        ok, why, _, _ = check(f, _seg(segs, f["text_index"]), rules)
+        if not ok:
+            errs.append(f"{i}: gate {why}")
+        cat[c] += 1
+        sev[s] += 1
+    print("\n".join(errs) if errs else "OK")
+    print(f"[{g}] findings={len(seen)} cat={dict(sorted(cat.items(), key=str))} sev={dict(sorted(sev.items(), key=str))} errors={len(errs)}")
+    return errs
 
 
 def pre(paths: Paths, rules: Rules, files: list[str]) -> list[dict]:
@@ -240,12 +321,12 @@ def pre(paths: Paths, rules: Rules, files: list[str]) -> list[dict]:
         segs = paths.group_src(g)
         ok_rows, bad_rows, stats = [], [], collections.Counter()
         for f in read_jsonl(p):
-            ti = f.get("text_index")
-            seg = segs.get(int(ti)) if isinstance(ti, int) or (isinstance(ti, str) and ti.isdigit()) else None
-            ok, why, new = check(f, seg, rules)
+            ok, why, new, override = check(f, _seg(segs, f.get("text_index")), rules)
             if ok:
                 f["_new_text"] = new
-                if f.get("redline_waiver"):
+                if override:   # an A finding dropping a glossary-only dst: let it through, never unchallenged
+                    f["_settled_override"] = override
+                if f.get("redline_waiver") or override:
                     f["_force_challenge"] = True
                 if f.get("latin_change") and f["category"] == "A":
                     f["_human"] = True
@@ -264,15 +345,32 @@ def pre(paths: Paths, rules: Rules, files: list[str]) -> list[dict]:
     return out
 
 
-def needs_challenge(f: dict, min_sev: int = 3, sample: float = 0.0) -> str:
-    """Tiering rule -> why this finding goes to the Challenger ('' = auto-accept).
-    A trilogy run (7357 gated findings): of 5034 findings backed by a Blind Reader flag the Challenger
-    rejected 5 (0.1%); of 2323 without one it rejected 152 (6.5%, mostly C/severity-1 and A/severity-1
-    'preferences'). So a flag is independent corroboration and only the uncorroborated rest needs a veto."""
+MODES = ("all", "tier", "slim")
+
+
+def needs_challenge(f: dict, min_sev: int = 3, sample: float = 0.0, mode: str = "tier") -> str:
+    """Assignment rule -> why this finding goes to the Challenger ('' = auto-accept).
+
+    mode "tier" (v1.13): a trilogy run (7357 gated findings): of 5034 findings backed by a Blind Reader
+    flag the Challenger rejected 5 (0.1%); of 2323 without one 152 (6.5%). So flagged findings below
+    `min_sev` are auto-accepted. But the Challenger was then forbidden to veto a flagged finding as
+    "the original was fine", so that 0.1% partly measures the rule, not the findings.
+
+    mode "slim" (v1.16, Resistance run): every A/B is challenged, because a passed A/B is written into
+    the book with nobody looking again -- of 42 flagged A/B challenged in g1-g2, 12 came back amended
+    (the proposed fix itself was wrong) and would have gone in as-is under "tier". A flagged C is
+    auto-accepted: it lands on the human list anyway. An unflagged C is still challenged (46% of
+    unflagged findings were vetoed book-wide)."""
     if f.get("_force_challenge") or f.get("redline_waiver"):
         return "waiver"
     if f.get("latin_change"):
         return "latin"
+    if mode == "all":
+        return "all"
+    if mode == "slim":
+        if f.get("category") in ("A", "B"):
+            return "ab"
+        return "" if f.get("flags") else "unflagged"
     if not f.get("flags"):
         return "unflagged"
     if int(f.get("severity") or 0) >= min_sev:
@@ -282,18 +380,23 @@ def needs_challenge(f: dict, min_sev: int = 3, sample: float = 0.0) -> str:
     return ""
 
 
-def segs_for(paths: Paths, files: list[str], tier: bool = False, min_sev: int = 3, sample: float = 0.0) -> None:
+def segs_for(paths: Paths, files: list[str], tier: bool = False, min_sev: int = 3, sample: float = 0.0,
+             mode: str | None = None) -> None:
     """-> challenge_X.jsonl (findings the Challenger must judge) + segs_X.json (their segments).
-    With --tier, flag-corroborated findings below `min_sev` are accepted without a Challenger
-    (verdicts_X.auto.jsonl), except a deterministic `sample` fraction kept as a spot check."""
+    mode "all" (default): everything is challenged. "tier" (--tier): flag-corroborated findings below
+    `min_sev` are accepted without a Challenger (verdicts_X.auto.jsonl), except a deterministic `sample`
+    fraction kept as a spot check. "slim": every A/B is challenged, flagged C/D auto-accepted
+    (they go to the human list), unflagged C/D challenged. See needs_challenge."""
+    mode = mode or ("tier" if tier else "all")
+    note = {"tier": "auto: corroborated by Blind Reader flag",
+            "slim": "auto: flagged C/D, goes to the human list"}.get(mode, "")
     for p in files:
         g = group_of(p)
         segs = paths.group_src(g)
         fs = read_jsonl(p)
-        why = {f["id"]: (needs_challenge(f, min_sev, sample) if tier else "all") for f in fs}
+        why = {f["id"]: needs_challenge(f, min_sev, sample, mode) for f in fs}
         chal = [f for f in fs if why[f["id"]]]
-        auto = [{"id": f["id"], "verdict": "accept", "reason": "auto: corroborated by Blind Reader flag"}
-                for f in fs if not why[f["id"]]]
+        auto = [{"id": f["id"], "verdict": "accept", "reason": note} for f in fs if not why[f["id"]]]
         write_jsonl(paths.f(f"challenge_{g}.jsonl"), [{k: v for k, v in f.items() if k != "_new_text"} for f in chal])
         ap = paths.f(f"verdicts_{g}.auto.jsonl")
         if auto:
@@ -306,7 +409,8 @@ def segs_for(paths: Paths, files: list[str], tier: bool = False, min_sev: int = 
         op = paths.f(f"segs_{g}.json")
         write_json(op, rows)
         mix = collections.Counter(why[f["id"]] for f in chal)
-        print(f"[{g}] challenge={len(chal)} auto={len(auto)} segs={len(rows)} {dict(mix)} -> {op}")
+        print(f"[{g}] challenge={len(chal)} auto={len(auto)} segs={len(rows)} {dict(mix)} -> {op}"
+              + ("" if chal else "  (nothing to challenge: no Challenger needed for this group)"))
 
 
 def blind(paths: Paths, groups: list[str]) -> None:
@@ -335,7 +439,7 @@ def hints(paths: Paths, files: list[str]) -> list[dict]:
         per, bad = collections.defaultdict(list), []
         for fl in read_jsonl(p):
             ti = fl.get("text_index")
-            seg = segs.get(int(ti)) if str(ti).isdigit() else None
+            seg = _seg(segs, ti)
             q = (fl.get("quote") or "").strip()
             if seg is None:
                 fl["_reject"] = "unknown_index"
@@ -366,7 +470,7 @@ def _apply_verdicts(findings: dict, verdicts: dict, segs: dict, rules: Rules):
             continue
         if v.get("verdict") == "amend" and v.get("amended"):
             f["proposed"] = v["amended"]
-            ok, why, _ = check(f, segs.get(int(f["text_index"])), rules)
+            ok, why, _, _ = check(f, segs.get(int(f["text_index"])), rules)
             if not ok:
                 f["_reject"] = "amend_failed:" + why
                 rej.append(f)
@@ -396,7 +500,7 @@ def final(paths: Paths, rules: Rules, groups: list[str]) -> list[dict]:
             verdicts = {v["id"]: v for v in read_jsonl(autop)} if os.path.exists(autop) else {}
             if os.path.exists(vp):
                 verdicts.update({v["id"]: v for v in read_jsonl(vp)})   # a real verdict overrides an auto one
-            else:
+            elif not (os.path.exists(cp := paths.f(f"challenge_{g}.jsonl")) and not read_jsonl(cp)):
                 print(f"[{g}] WARNING: no {os.path.basename(vp)}; challenged findings count as no_verdict")
         else:   # a group without a Challenger (e.g. the consistency auditor): everything goes to the human list
             verdicts = {fid: {"verdict": "accept", "reason": "no challenger"} for fid in findings}
@@ -506,7 +610,7 @@ def stats(paths: Paths, groups: list[str]) -> str:
         if not os.path.exists(fp):
             continue
         F = read_jsonl(fp)
-        fl = {x["id"] for x in read_jsonl(paths.f(f"flags_{g}.jsonl"))} if os.path.exists(paths.f(f"flags_{g}.jsonl")) else set()
+        fl = _flag_ids(paths, g) or set()
         flags += len(fl)
         used += len(fl & {x for f in F for x in (f.get("flags") or [])})
         for r in (read_jsonl(paths.f(f"rejected_{g}.jsonl")) if os.path.exists(paths.f(f"rejected_{g}.jsonl")) else []):
@@ -950,11 +1054,17 @@ def main(argv=None):
     inv.add_argument("--min-count", type=int, default=2)
     inv.add_argument("--max-terms", type=int, default=200)
 
+    ck = sub.add_parser("check", help="read-only lint of a Reviewer's findings_X.jsonl (brief rules + gate); exit 1 on errors")
+    common(ck, groups=True)
+    ck.add_argument("--file", help="findings file to check (default <review dir>/findings_<GROUP>.jsonl; one group only)")
     common(sub.add_parser("pre", help="mechanical gate -> findings_X.pre.jsonl + rejected_X.jsonl"), files="FINDINGS_JSONL")
     sg = sub.add_parser("segs", help="findings + segments the Challenger needs -> challenge_X.jsonl / segs_X.json")
     common(sg, files="FINDINGS_PRE_JSONL")
+    sg.add_argument("--mode", choices=MODES,
+                    help="all (default): challenge everything; tier: = --tier; slim: challenge every A/B, "
+                         "auto-accept flagged C/D (they go to the human list), challenge unflagged C/D")
     sg.add_argument("--tier", action="store_true",
-                    help="auto-accept Blind-flag-corroborated findings below --min-sev (verdicts_X.auto.jsonl)")
+                    help="(v1.13) auto-accept Blind-flag-corroborated findings below --min-sev (verdicts_X.auto.jsonl)")
     sg.add_argument("--min-sev", type=int, default=3, help="with --tier: flagged findings at/above this still go to the Challenger")
     sg.add_argument("--sample", type=float, default=0.05, help="with --tier: fraction of auto findings still challenged (spot check)")
     rs = sub.add_parser("rules", help="per-group slice of glossary + rulings -> rules_X.json")
@@ -1011,6 +1121,10 @@ def main(argv=None):
         import_findings(paths, a.file, a.group, a.source)
         return 0
     rules = load_rules(paths, getattr(a, "locked", None))
+    if a.cmd == "check":   # read-only: before anything below creates directories
+        if a.file and len(a.groups) != 1:
+            ap.error("--file takes exactly one GROUP")
+        return 1 if sum(len(check_file(paths, rules, g, a.file)) for g in a.groups) else 0
     if a.cmd in ("benchmark", "inventory"):
         try:
             lo, hi = (int(x) for x in a.range.split("-", 1))
@@ -1025,7 +1139,9 @@ def main(argv=None):
     elif a.cmd == "pre":
         pre(paths, rules, a.files)
     elif a.cmd == "segs":
-        segs_for(paths, a.files, a.tier, a.min_sev, a.sample)
+        if a.mode and a.tier and a.mode != "tier":
+            ap.error("--tier conflicts with --mode " + a.mode)
+        segs_for(paths, a.files, a.tier, a.min_sev, a.sample, a.mode)
     elif a.cmd == "rules":
         locked = a.locked or os.path.join(os.path.dirname(os.path.abspath(a.cache)), "glossary.locked.json")
         rules_slice(paths, a.groups, locked, a.examples or [paths.shared("EXAMPLES.md")])

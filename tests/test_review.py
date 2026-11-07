@@ -18,7 +18,7 @@ def _f(off, prop, cat="B", **kw):
 def test_check_offending_must_occur_once():
     r = _rules()
     assert review.check(_f("这么说的", "这样说的"), SEG, r)[1].startswith("ambiguous(2)")
-    ok, why, new = review.check(_f("他也这么说的", "他也这样说的"), SEG, r)
+    ok, why, new, _ = review.check(_f("他也这么说的", "他也这样说的"), SEG, r)
     assert ok and new.endswith("他也这样说的。")
 
 
@@ -137,10 +137,10 @@ def test_load_rules_reads_config_and_glossary(tmp_path, make_project):
     json.dump({"terms": [{"src": "musket", "dst": "火枪"}, {"src": "Ops", "dst": "", "keep_source": True}]},
               open(os.path.join(os.path.dirname(cache), "glossary.locked.json"), "w"))
     r = review.load_rules(paths)
-    assert r.violation("Mara 上校", "Mara 舰长") == "E_redline"
-    assert r.violation("那把火枪", "那把火枪，沉甸甸的") == ""   # term kept
-    assert r.violation("那把火枪", "那把枪") == "E_settled_removed"
-    assert r.violation("a", "「a」") == ""                    # forbid disabled by config
+    assert r.violation("Mara 上校", "Mara 舰长")[0] == "E_redline"
+    assert r.violation("那把火枪", "那把火枪，沉甸甸的")[0] == ""   # term kept
+    assert r.violation("那把火枪", "那把枪")[0] == "E_settled_removed"
+    assert r.violation("a", "「a」")[0] == ""                    # forbid disabled by config
 
 
 def test_check_sentence_rewrite_length_guard():
@@ -148,7 +148,7 @@ def test_check_sentence_rewrite_length_guard():
            "translated_text": "他在剖解通讯面板内存缓冲区里的活动日志时，不喜欢自己看到的东西。"}
     r = _rules()
     off = "他在剖解通讯面板内存缓冲区里的活动日志时，不喜欢自己看到的东西"
-    ok, _, new = review.check(_f(off, "他剖解通讯面板内存缓冲区里的活动日志，越看越不喜欢"), seg, r)
+    ok, _, new, _ = review.check(_f(off, "他剖解通讯面板内存缓冲区里的活动日志，越看越不喜欢"), seg, r)
     assert ok and new.startswith("他剖解")
     assert review.check(_f(off, "他不喜欢"), seg, r)[1].startswith("rewrite_length")          # content dropped
     assert review.check(_f("不喜欢", "一点也不喜欢啊呀"), seg, r)[0]                           # short edits unguarded
@@ -234,3 +234,116 @@ def test_rules_slice(tmp_path, make_project):
     assert obj["general"] == ["- 「的」字别扎堆"]
     assert set(obj["rulings"]) == {"- Seven 译「阿七」", "- five 译「伍」"}
     assert [t["src"] for t in obj["glossary"]] == ["seven"] and row["glossary"] == 1
+
+
+def test_settled_longer_rendering_and_glossary_override():
+    seg = {"text_index": 1, "source_text": "She was chief medical officer. The Borg queen.",
+           "translated_text": "她首先是医生。博格来了，博格女王说。"}
+    r = _rules(settled=["博格", "博格女王", "首席医疗官"], _glossary=["医生"])
+    # a longer settled rendering that contains the removed one keeps it
+    assert review.check(_f("博格来了", "博格女王来了"), seg, r)[0]
+    # ... but one already standing in `off` does not cover a dropped shorter one
+    assert review.check(_f("博格来了，博格女王说", "他们来了，博格女王说"), seg, r)[1] == "E_settled_removed"
+    # glossary-only dst: an A finding may drop it (and is then always challenged) ...
+    f = _f("她首先是医生", "她首先是首席医疗官", cat="A")
+    ok, _, _, override = review.check(f, seg, r)
+    assert ok and override == ["医生"] and "_settled_override" not in f      # check() does not mutate
+    # ... a B/C finding may not, and nobody may drop a config `settled` rendering
+    assert review.check(_f("她首先是医生", "她首先是首席医疗官"), seg, r)[1] == "E_settled_removed"
+    assert review.check(_f("博格来了", "他们来了", cat="A"), seg, r)[1] == "E_settled_removed"
+
+
+def test_needs_challenge_slim_mode():
+    nc = lambda **f: review.needs_challenge({"id": "a", **f}, mode="slim")  # noqa: E731
+    assert nc(category="A", flags=["b1"], severity=2) == "ab"       # flagged A/B: still challenged
+    assert nc(category="B", severity=1) == "ab"
+    assert nc(category="C", flags=["b1"], severity=2) == ""         # flagged C: human list anyway
+    assert nc(category="C", severity=2) == "unflagged"
+    assert nc(category="C", flags=["b1"], severity=2, redline_waiver="x") == "waiver"
+    assert nc(category="C", flags=["b1"], severity=2, _force_challenge=True) == "waiver"
+    assert nc(category="C", flags=["b1"], severity=2, latin_change=True) == "latin"
+    assert review.needs_challenge({"id": "a", "category": "C", "flags": ["b1"]}, mode="all") == "all"
+
+
+def test_segs_slim_and_check_command(tmp_path, make_project, capsys):
+    cache = _project_dir(tmp_path, make_project)
+    paths = review.Paths(cache)
+    os.makedirs(paths.groups)
+    batch.main(["split", cache, "--stage", "review", "--prefix", "g", "--target", "10",
+                "--out-dir", paths.groups, "--context", "0"])
+    review.write_jsonl(paths.f("flags_g1.jsonl"), [{"id": "g1-b1", "text_index": 1, "quote": "二"}])
+    good = [
+        {"id": "g1-001", "text_index": 1, "category": "B", "severity": 2, "offending": "二", "proposed": "贰",
+         "reason": "r", "flags": ["g1-b1"]},
+        {"id": "g1-002", "text_index": 2, "category": "C", "severity": 2, "offending": "六", "proposed": "陆",
+         "reason": "r", "source_evidence": "six", "flags": ["g1-b1"]},
+        {"id": "g1-003", "text_index": 3, "category": "C", "severity": 2, "offending": "七", "proposed": "柒",
+         "reason": "r", "source_evidence": "seven"},
+    ]
+    review.write_jsonl(paths.f("findings_g1.jsonl"), good)
+    before = sorted(os.listdir(paths.dir))
+    assert review.main(["check", cache, "g1"]) == 0
+    assert "OK" in capsys.readouterr().out
+    assert sorted(os.listdir(paths.dir)) == before          # read-only
+    bad = good + [
+        {"id": "g1-001", "text_index": 1, "category": "B", "severity": 2, "offending": "一", "proposed": "壹", "reason": "r"},
+        {"id": "g1-005", "text_index": 1, "category": "C", "severity": 1, "offending": "三", "proposed": "叁",
+         "reason": "r", "source_evidence": "three"},
+        {"id": "g1-006", "text_index": 1, "category": "D", "severity": 2, "offending": "三", "proposed": "叁", "reason": "r"},
+        {"id": "g1-007", "text_index": 2, "category": "A", "severity": 2, "offending": "四", "proposed": "肆", "reason": "r"},
+        {"id": "g1-008", "text_index": 2, "category": "B", "severity": 2, "offending": "九", "proposed": "玖",
+         "reason": "r", "flags": ["g1-b9"]},
+    ]
+    with open(paths.f("findings_g1.jsonl"), "w", encoding="utf-8") as fh:
+        fh.write("\n".join(json.dumps(f, ensure_ascii=False) for f in bad) + "\n{not json\n")
+    assert review.main(["check", cache, "g1"]) == 1
+    out = capsys.readouterr().out
+    for msg in ("g1-001: duplicate id", "g1-005: drop C severity 1", "g1-006: no D findings",
+                "g1-007: source_evidence required", "g1-008: unknown flags ['g1-b9']", "g1-008: gate ambiguous(0)",
+                "bad JSON"):
+        assert msg in out, msg
+    # mixed-type severity must be reported, not crash the summary
+    with open(paths.f("findings_g1.jsonl"), "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(dict(good[0], severity="2"), ensure_ascii=False) + "\n"
+                 + json.dumps(good[1], ensure_ascii=False) + "\n")
+    assert review.main(["check", cache, "g1"]) == 1
+    assert "g1-001: severity must be 1/2/3" in capsys.readouterr().out
+    # slim assignment: A/B challenged, flagged C auto, unflagged C challenged
+    review.write_jsonl(paths.f("findings_g1.jsonl"), good)
+    rules = review.load_rules(paths)
+    review.pre(paths, rules, [paths.f("findings_g1.jsonl")])
+    assert review.main(["segs", cache, "--mode", "slim", paths.f("findings_g1.pre.jsonl")]) == 0
+    assert [f["id"] for f in review.read_jsonl(paths.f("challenge_g1.jsonl"))] == ["g1-001", "g1-003"]
+    assert [v["id"] for v in review.read_jsonl(paths.f("verdicts_g1.auto.jsonl"))] == ["g1-002"]
+    review.write_jsonl(paths.f("verdicts_g1.jsonl"), [{"id": "g1-001", "verdict": "accept", "reason": "ok"},
+                                                     {"id": "g1-003", "verdict": "reject", "reason": "fine"}])
+    res = review.final(paths, rules, ["g1"])[0]
+    assert (res["apply_segments"], res["review"], res["rejected"]) == (1, 1, 1)
+
+
+def test_settled_override_is_always_challenged(tmp_path, make_project, capsys):
+    cache = _project_dir(tmp_path, make_project)
+    paths = review.Paths(cache)
+    os.makedirs(paths.groups)
+    batch.main(["split", cache, "--stage", "review", "--prefix", "g", "--target", "10",
+                "--out-dir", paths.groups, "--context", "0"])
+    rules = review.Rules({}, ["二"])            # 二 is a glossary-only settled rendering
+    review.write_jsonl(paths.f("findings_g1.jsonl"), [
+        {"id": "g1-001", "text_index": 1, "category": "A", "severity": 2, "offending": "二", "proposed": "两",
+         "flags": ["g1-b1"]},
+        {"id": "g1-002", "text_index": 3, "category": "C", "severity": 2, "offending": "七", "proposed": "柒",
+         "flags": ["g1-b1"]},
+    ])
+    review.pre(paths, rules, [paths.f("findings_g1.jsonl")])
+    f = review.read_jsonl(paths.f("findings_g1.pre.jsonl"))[0]
+    assert f["_settled_override"] == ["二"] and f["_force_challenge"]
+    for mode in ("tier", "slim"):               # flagged sev2 A would be auto under tier without the override
+        review.segs_for(paths, [paths.f("findings_g1.pre.jsonl")], mode=mode, sample=0.0)
+        assert [x["id"] for x in review.read_jsonl(paths.f("challenge_g1.jsonl"))] == ["g1-001"]
+    # a group with nothing to challenge: final must not warn about a missing verdicts file
+    review.write_jsonl(paths.f("findings_g1.jsonl"), [review.read_jsonl(paths.f("findings_g1.jsonl"))[1]])
+    review.pre(paths, rules, [paths.f("findings_g1.jsonl")])
+    review.segs_for(paths, [paths.f("findings_g1.pre.jsonl")], mode="slim")
+    assert "no Challenger needed" in capsys.readouterr().out
+    res = review.final(paths, rules, ["g1"])[0]
+    assert "WARNING" not in capsys.readouterr().out and res["review"] == 1
