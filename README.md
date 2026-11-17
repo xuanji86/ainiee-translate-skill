@@ -5,7 +5,7 @@
 **Agent 原生的长篇翻译管线** —— 让编码 agent 本身当翻译引擎，端到端译完一本书。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.17.2-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
+[![Version](https://img.shields.io/badge/version-1.17.3-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue.svg)](pyproject.toml)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://claude.com/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-compatible-333.svg)](skills/ainiee-translate/references/codex-tools.md)
@@ -231,7 +231,7 @@ polish      write <cache> FILES… [--force] [--allow-tag-mismatch]
 cache       stats <cache>  |  show <cache> --range A-B [--status …] [--width N]
             dump <cache> [--range A-B] --out F [--status …] [--changed-since OLD_CACHE]
             set-status <cache> --range A-B --from N --to N [--apply]     （N ∈ 0/1/2/7）
-            fill-dupes <cache> [--max-words N] [--apply]                 （过写回闸门，拒收的列出、退出码 1）
+            fill-dupes <cache> [--max-words N] [--apply]                 （忽略 ⟦n⟧ 占位符匹配并按目标首尾重包；占位符在文中的段跳过并列出；过写回闸门，拒收的列出、退出码 1）
 state       show <cache>  |  settle <cache> --dst D [--src S] [--note N]
             errata <cache> IDX --note N  |  tag-exception <cache> IDX --reason R
             lint-rule <cache> NAME --re REGEX [--msg M]  |  card <cache> [--range A-B]

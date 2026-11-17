@@ -10,7 +10,10 @@
   cache fill-dupes <cache> [--max-words 8] [--apply]
                                                    copy a translation to untranslated/excluded segments
                                                    with the same short source (contents page ← NCX);
-                                                   goes through the write gate like `batch write`
+                                                   goes through the write gate like `batch write`;
+                                                   epub ⟦n⟧ placeholders are ignored when matching and
+                                                   re-wrapped around the copy when they sit at the
+                                                   ends of the target (mid-text ones are skipped, listed)
 """
 import argparse
 import collections
@@ -19,6 +22,7 @@ import re
 
 from . import cache_io, helpers
 from .batch import parse_range, changed_indexes, make_check
+from ._vendor.ModuleFolders.Domain.FileReader.EpubReader import TOKEN_RE
 from ._vendor.ModuleFolders.Service.Cache.CacheItem import TranslationStatus
 
 _TAGS = re.compile(r"</?[a-z]+>", re.I)
@@ -43,24 +47,41 @@ def stats(project) -> dict:
 
 
 def _norm(s: str) -> str:
-    return " ".join(_TAGS.sub("", s or "").split()).lower()
+    return " ".join(_TAGS.sub("", TOKEN_RE.sub("", s or "")).split()).lower()
 
 
-def fill_dupes(project, max_words: int = 8) -> list[tuple[int, int, str]]:
-    """-> [(target_idx, donor_idx, text)] for short sources already translated elsewhere."""
+_ENDS = re.compile(r"((?:\s*⟦/?\d+⟧)*)(.*?)((?:⟦/?\d+⟧\s*)*)", re.S)   # placeholders · text · placeholders
+
+
+def _rewrap(source: str, bare: str) -> str | None:
+    """`bare` inside the placeholders the target source has at its ends; None when one sits mid-text."""
+    pre, mid, post = _ENDS.fullmatch(source or "").groups()
+    if TOKEN_RE.search(mid):
+        return None
+    return "".join(TOKEN_RE.findall(pre)) + bare + "".join(TOKEN_RE.findall(post))
+
+
+def fill_dupes(project, max_words: int = 8) -> tuple[list[tuple[int, int, str]], list[tuple[int, int]]]:
+    """-> ([(target_idx, donor_idx, text)], [(target_idx, donor_idx) skipped: placeholder mid-text]).
+    The donor's own placeholders are dropped and the target's are put back around the bare translation."""
     done = {}
     for it in cache_io.iter_items(project):
-        if it.translation_status in (TranslationStatus.TRANSLATED, TranslationStatus.POLISHED) and (it.translated_text or "").strip():
+        if it.translation_status in (TranslationStatus.TRANSLATED, TranslationStatus.POLISHED):
+            bare = TOKEN_RE.sub("", it.translated_text or "").strip()
             k = _norm(it.source_text)
-            if k and len(k.split()) <= max_words:
-                done.setdefault(k, (it.text_index, it.translated_text))
-    out = []
+            if bare and k and len(k.split()) <= max_words:
+                done.setdefault(k, (it.text_index, bare))
+    out, skipped = [], []
     for it in cache_io.iter_items(project):
         if it.translation_status in (TranslationStatus.UNTRANSLATED, TranslationStatus.EXCLUDED):
             hit = done.get(_norm(it.source_text))
             if hit:
-                out.append((it.text_index, hit[0], hit[1]))
-    return out
+                text = _rewrap(it.source_text, hit[1])
+                if text is None:
+                    skipped.append((it.text_index, hit[0]))
+                else:
+                    out.append((it.text_index, hit[0], text))
+    return out, skipped
 
 
 def main(argv=None):
@@ -97,14 +118,15 @@ def main(argv=None):
         return 0
     if a.cmd == "fill-dupes" and a.apply:
         # the same gate as `batch write`: a donor with <i> must not land on a source without marks
-        rows = [{"text_index": ti, "translated_text": text}
-                for ti, _, text in fill_dupes(cache_io.load_cache(a.cache), a.max_words)]
+        found, skipped = fill_dupes(cache_io.load_cache(a.cache), a.max_words)
+        rows = [{"text_index": ti, "translated_text": text} for ti, _, text in found]
         open_ = (TranslationStatus.UNTRANSLATED, TranslationStatus.EXCLUDED)
         res = cache_io.apply_writeback(
             a.cache, rows, TranslationStatus.TRANSLATED, lambda r: r["translated_text"],
             check=make_check(cache_path=a.cache),
             guard=lambda item, text: None if item.translation_status in open_ else "already_translated")
-        print(f"filled {res.applied} segment(s)" + (f"; rejected {len(res.rejected)}: {res.rejected[:20]}" if res.rejected else ""))
+        print(f"filled {res.applied} segment(s)" + (f"; rejected {len(res.rejected)}: {res.rejected[:20]}" if res.rejected else "")
+              + (f"; skipped {len(skipped)} (placeholder mid-text, translate by hand): {[ti for ti, _ in skipped][:20]}" if skipped else ""))
         return 1 if res.rejected else 0
 
     project = cache_io.load_cache(a.cache)
@@ -127,10 +149,12 @@ def main(argv=None):
         n = sum(1 for _ in _sel(project, rng, {a.frm}))
         print(f"would set {n} segment(s) {a.frm} -> {a.to} (preview; add --apply)")
     elif a.cmd == "fill-dupes":
-        rows = fill_dupes(project, a.max_words)
+        rows, skipped = fill_dupes(project, a.max_words)
         for ti, donor, text in rows[:30]:
             print(f"{ti:5d} <- {donor:5d}  {text}")
-        print(f"{len(rows)} segment(s) would be filled (preview; add --apply)")
+        for ti, donor in skipped[:30]:
+            print(f"{ti:5d} <- {donor:5d}  skipped, placeholder mid-text")
+        print(f"{len(rows)} segment(s) would be filled, {len(skipped)} skipped (placeholder mid-text) (preview; add --apply)")
     return 0
 
 
