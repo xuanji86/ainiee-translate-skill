@@ -4,7 +4,9 @@ Two tiers, shared by `batch write` (gate), `batch validate` (pre-write) and the
 `audit` CLI (whole cache):
 
 - hard  → the segment must not be written: `empty` (source has text, target
-  none), `tag_mismatch` (<i>/<b> open/close counts differ from the source;
+  none), `token_mismatch` (epub link/anchor placeholders ⟦n⟧ / ⟦n⟧…⟦/n⟧ not
+  each kept exactly once, or a pair closed before it opens — never waivable),
+  `tag_mismatch` (<i>/<b> open/close counts differ from the source;
   pass allow_tag_mismatch for projects whose rules permit an exception, e.g.
   translated book titles switching from <i> to 《》).
 - soft  → style slips worth a look, tallied not blocking: identical_untranslated,
@@ -23,7 +25,19 @@ _MARK = re.compile(r"</?[ib]>")
 _LATIN_WORD = re.compile(r"[A-Za-z']+")
 _HAN = re.compile(r"[一-鿿]")
 
-HARD_KINDS = ("empty", "tag_mismatch")
+_TOKEN = re.compile(r"⟦/?\d+⟧")
+
+HARD_KINDS = ("empty", "token_mismatch", "tag_mismatch")
+
+
+def token_mismatch(src: str, tgt: str) -> bool:
+    """Every placeholder from the source exactly once in the target, nothing invented,
+    and each ⟦n⟧…⟦/n⟧ pair still opens before it closes (order between tokens may change)."""
+    s, t = _TOKEN.findall(src), _TOKEN.findall(tgt)
+    if sorted(s) != sorted(t):
+        return True
+    pos = {tok: i for i, tok in enumerate(t)}
+    return any(pos[f"⟦{tok[2:]}"] > pos[tok] for tok in t if tok.startswith("⟦/"))
 
 
 def mark_mismatch(src: str, tgt: str) -> list[str]:
@@ -39,6 +53,8 @@ def hard_checks(src: str, tgt: str, allow_tag_mismatch: bool = False) -> list[st
     src, tgt = src or "", tgt or ""
     if src.strip() and not tgt.strip():
         return ["empty"]
+    if token_mismatch(src, tgt):
+        return ["token_mismatch"]
     if not allow_tag_mismatch and mark_mismatch(src, tgt):
         return ["tag_mismatch"]
     return []
@@ -52,7 +68,7 @@ def soft_checks(src: str, tgt: str) -> list[str]:
     words = len(_LATIN_WORD.findall(s))
     if words >= 8 and t.strip() == s.strip():
         w.append("identical_untranslated")
-    bare = _MARK.sub("", t)
+    bare = _TOKEN.sub("", _MARK.sub("", t))
     if re.search(r"[<>]|&[a-z]+;", bare):
         w.append("markup_leak")
     if has_cjk(t):

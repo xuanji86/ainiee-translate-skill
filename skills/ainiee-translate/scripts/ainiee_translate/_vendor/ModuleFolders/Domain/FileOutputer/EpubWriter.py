@@ -9,7 +9,7 @@ from ainiee_translate._vendor.ModuleFolders.Service.Cache.CacheFile import Cache
 from ainiee_translate._vendor.ModuleFolders.Service.Cache.CacheItem import TranslationStatus
 from ainiee_translate._vendor.ModuleFolders.Service.Cache.CacheProject import ProjectType
 from ainiee_translate._vendor.ModuleFolders.Domain.FileAccessor.EpubAccessor import EpubAccessor
-from ainiee_translate._vendor.ModuleFolders.Domain.FileReader.EpubReader import class_mark, mark_for
+from ainiee_translate._vendor.ModuleFolders.Domain.FileReader.EpubReader import TOKEN_RE, class_mark, mark_for
 from ainiee_translate._vendor.ModuleFolders.Domain.FileOutputer.BaseWriter import (
     BaseBilingualWriter,
     BaseTranslatedWriter,
@@ -53,9 +53,12 @@ def _wrapper_from_original(original_html: str, mark: str):
     return f"<{name}>", f"</{name}>"
 
 
-def render_marks(text: str, original_html: str) -> str:
-    """转义译文，再把 <i>/<b> 标记还原成真正的行内标签。"""
+def render_marks(text: str, original_html: str, tokens: dict | None = None) -> str:
+    """转义译文，再把 <i>/<b> 标记与 ⟦n⟧ 链接占位符还原成真正的行内标签。
+    只有解析时存档的片段（extra["epub_tokens"]）会变成标签；模型输出一律转义。"""
     out = _escape(text)
+    if tokens:
+        out = TOKEN_RE.sub(lambda m: tokens.get(m.group().strip("⟦⟧"), m.group()), out)
     for mark in ("i", "b"):
         if f"&lt;{mark}&gt;" not in out:
             continue
@@ -64,8 +67,16 @@ def render_marks(text: str, original_html: str) -> str:
     return out
 
 
+_ID_ATTR = re.compile(r'\s(?:xml:)?id="[^"]*"')
+
+
+def _strip_ids(tokens: dict | None) -> dict | None:
+    """双语版里原文段会照抄锚点，译文那份去掉 id，免得同一文件里 id 重复。"""
+    return {k: _ID_ATTR.sub("", v) for k, v in tokens.items()} if tokens else tokens
+
+
 def has_marks(text: str) -> bool:
-    return bool(re.search(r"</?[ib]>", text))
+    return bool(re.search(r"</?[ib]>|⟦/?\d+⟧", text))
 
 
 def drop_self_mark(tag: Tag, text: str) -> str:
@@ -105,7 +116,7 @@ class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
 
     def _write_translation_file(
         self, translation_file_path: Path, cache_file: CacheFile,
-        source_file_path: Path, translate_html_tag: Callable[[str, str], str]
+        source_file_path: Path, translate_html_tag: Callable[..., str]
     ):
         content = self.file_accessor.read_content(source_file_path)
 
@@ -124,7 +135,8 @@ class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
                 if item.translation_status == TranslationStatus.TRANSLATED or item.translation_status == TranslationStatus.POLISHED:
                     original_html = item.require_extra("original_html")
                     translated_text = item.final_text
-                    new_html = translate_html_tag(original_html, translated_text)
+                    new_html = translate_html_tag(original_html, translated_text,
+                                                  (item.extra or {}).get("epub_tokens"))
                     modified_html_content = modified_html_content.replace(original_html, new_html, 1)
             translation_content[item_filename] = modified_html_content
         self.file_accessor.write_content(
@@ -132,7 +144,7 @@ class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
         )
 
     # 译文版本
-    def _rebuild_translated_tag(self, original_html, translated_text):
+    def _rebuild_translated_tag(self, original_html, translated_text, tokens=None):
         soup = BeautifulSoup(original_html, 'html.parser')
         original_tag = soup.find()
         if not original_tag:
@@ -153,14 +165,14 @@ class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
                 ' {}="{}"'.format(k, " ".join(v) if isinstance(v, list) else v)
                 for k, v in new_tag.attrs.items()
             )
-            body = render_marks(processed_translated, original_html)
+            body = render_marks(processed_translated, original_html, tokens)
             return f"<{new_tag.name}{attrs}>{body}</{new_tag.name}>"
 
         new_tag.string = processed_translated
         return str(new_tag)
 
     # 双语版本
-    def _rebuild_bilingual_tag(self, original_html, translated_text):
+    def _rebuild_bilingual_tag(self, original_html, translated_text, tokens=None):
         ORIGINAL_STYLE = {
             'opacity': '0.8',
             'color': '#888',
@@ -178,7 +190,7 @@ class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
             processed_trans = self._copy_leading_spaces(original_text_content, translated_text)
             style_str = '; '.join([f"{k}:{v}" for k, v in ORIGINAL_STYLE.items()])
 
-            rendered = render_marks(processed_trans, original_html) if has_marks(processed_trans) else processed_trans
+            rendered = render_marks(processed_trans, original_html, _strip_ids(tokens)) if has_marks(processed_trans) else processed_trans
             trans_div = f'<div>{rendered}</div>'
             orig_div = f'<div style="{style_str}">{original_html}</div>'
 
@@ -203,7 +215,7 @@ class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
             )
             trans_marked = (
                 f"<{trans_tag.name}{attrs}>"
-                f"{render_marks(processed_trans, original_html)}"
+                f"{render_marks(processed_trans, original_html, _strip_ids(tokens))}"
                 f"</{trans_tag.name}>"
             )
 

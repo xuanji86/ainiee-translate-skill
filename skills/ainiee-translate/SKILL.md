@@ -111,6 +111,7 @@ mkdir -p "$WORK/work" "$WORK/out"
 - 成功后打印：`parsed N items -> work/cache.json`。
 - **默认只译正文**：解析后立刻跑 `scope` 划定范围（见下「步骤 2.5」）。
 - **epub 的行内排版会被保留**：源书的斜体/粗体（`<i>`、`<em>`、`<span class="italic">` 等各种写法）在 `source_text` 里统一成 `<i>…</i>` / `<b>…</b>` 标记，导出时按该段原文的实际写法还原。翻译时**原样保留标记**（见 `references/translation_rules.md`），不要再用『』手动标斜体。
+- **epub 的段内链接也会被保留**：脚注引用、超链接、锚点（`id`）、行内图片在 `source_text` 里写成 `⟦n⟧`（整个元素，照抄不译）或 `⟦n⟧…⟦/n⟧`（包住的链接文字照译），原 HTML 存在该段 `extra.epub_tokens`，导出时只还原这些存档片段。译文里每个占位符恰好一次；缺、多、改号由写回闸门以 `token_mismatch` 拒收（不受 `--allow-tag-mismatch` 豁免）。只对新解析的项目生效；存量项目 `repair` 不会补占位符。
 ---
 
 ## 步骤 2.5：划定翻译范围（只译正文 + Historian's Note）
@@ -304,7 +305,7 @@ v1.4.1 及更早版本的 epub 解析用 `soup.get_text(strip=True)` 抽文本�
 ```
 
 - 写回前自动创建带时间戳的备份 `cache.json.bak.YYYYMMDD_HHMMSS`（默认只保留最近 10 个，`AINIEE_BACKUP_KEEP` 可调，0 = 不清理；手工备份如 `cache.json.pre_xxx` 不受影响）；写入是原子的（临时文件 + rename），并持有 `cache.json.lock` 文件锁。
-- **写回闸门**：空译文、`<i>`/`<b>` 数量与源文不符、未知 `text_index` 一律拒收并逐条列出，其余照写；退出码 1 表示有拒收。项目规则允许标记数变化（如中译书名从 `<i>` 改《》）时加 `--allow-tag-mismatch`；`--force` 只保留「未知 index」这一条拒收。同时统计风格警告（半角标点、「」、长度比异常等，见 `audit`）。
+- **写回闸门**：空译文、`⟦n⟧` 链接占位符没有各留一次、`<i>`/`<b>` 数量与源文不符、未知 `text_index` 一律拒收并逐条列出，其余照写；退出码 1 表示有拒收。项目规则允许标记数变化（如中译书名从 `<i>` 改《》）时加 `--allow-tag-mismatch`；`--force` 只保留「未知 index」这一条拒收。同时统计风格警告（半角标点、「」、长度比异常等，见 `audit`）。
 - 可以一次给多个文件，也接受 **JSONL**（每行一个 `{"text_index","translated_text"}`）：`batch write cache.json t1.json t2.jsonl …`——一次备份、一次加载、一次保存。
 - 成功后打印：`applied N of M`。重复执行步骤 5a → 5c 直到 `batch read` 返回空数组（`[]`）为止。
 
@@ -376,10 +377,11 @@ agent 的最终消息只回段数、新词数和 ≤5 条拿不准的。并行 a
 ```
 
 默认每个问题一行（段号 / 类型 / 详情），总数打到 stderr；`--json` 输出纯 JSON，`--out` 另存全文，`--baseline FILE` 隐藏已复核过的误报（`--write-baseline` 存当前清单）。
-头衔+人名（`Elder Maren` → `Maren 长老`）、`Arden of Vel`、助动词 `Will you…`、首字下沉拆开的名字（`<b>O</b>ssa`）都不算丢名。两类检测：
+头衔+人名（`Elder Maren` → `Maren 长老`）、`Arden of Vel`、助动词 `Will you…`、首字下沉拆开的名字（`<b>O</b>ssa`）都不算丢名。三类检测：
 
 - `empty_translation`：源段有内容但译文为空（漏译）。
 - `name_not_preserved`：源段含锁定表英文人名但译文中该名消失（人名汉化）。
+- `term_missing`：源段含锁定表 `terms` 里带 `dst` 的术语，译文里却找不到它的任一译法（`airship`→飞艇，某段写成「飞船」）。较长的术语先认领其所在片段（`Arden of Vel` 不再算一次 `Vel`）；全小写的通名不分大小写、认复数 -s；`dst` 可写 `飞艇/飞船` 列出可接受的译法；`category` 为 rank/title/role 的不查（军衔按人而定）；`keep_source` 的归 `name` 类检查。合理的代词替代、省略会误报，复核后放进 `--baseline`。
 
 verify 检查**已译（status 1）和已润色（status 2）**两类段（润色文本就存在 `translated_text`）。修正一律用 `batch apply`（按段保住原状态，可只给 `patches`），重新跑 verify，直到无问题。
 
@@ -387,7 +389,7 @@ verify 检查**已译（status 1）和已润色（status 2）**两类段（润�
 
 verify 是**词汇表执行器**，不是**发现器**。它只能发现「锁定表里登记过的人名」消失的情况，因此天然漏掉下面这些（实战中绝大多数漏网错误都属于此）：
 
-1. **词汇表覆盖不全（头号原因）**：verify 只查 `glossary.locked.json` 的 `characters`。**没进表的名字它根本不知道要查**——配角、地名、舰名，尤其当词汇表是从「上一本书」或 AiNiee 分析缓存里种出来、没针对当前书补全时。一份「2 个问题」的干净报告，往往只是因为表里恰好只有 2 个相关名字。→ **对策：词汇表必须随当前书补全**（见下方 `scan` 发现流程）。
+1. **词汇表覆盖不全（头号原因）**：verify 只查 `glossary.locked.json` 的 `characters` 和带 `dst` 的 `terms`。**没进表的名字它根本不知道要查**——配角、地名、舰名，尤其当词汇表是从「上一本书」或 AiNiee 分析缓存里种出来、没针对当前书补全时。一份「2 个问题」的干净报告，往往只是因为表里恰好只有 2 个相关名字。→ **对策：词汇表必须随当前书补全**（见下方 `scan` 发现流程）。
 2. **整段成员检查，漏「同段对错并存」**：若同一段里某名字一处保留英文、另一处被音译（例：`Hale 看着…后来黑尔离开`），verify 看到「Hale 在」就不报。
 3. **「全程音译」的名字无信号**：若某名字在**全书每一处**都被音译（例 `Tamsin→塔姆辛`、`Orvane→奥尔万`），它从没以英文出现过，"时而对时而错"的不一致信号为零。
 4. **区分不了「音译错误」与「合理代词省略 / 合法意译」**：补全词汇表后，那些把名字合理处理成「他/她」的段会被误报；`Avalon→阿瓦隆` 这种合法意译它也无法识别。

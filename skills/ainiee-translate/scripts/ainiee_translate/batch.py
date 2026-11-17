@@ -336,7 +336,7 @@ def make_bundle(cache_path: str, src_json: str, out_md: str, *, stage: str = "tr
         key = "polished_text" if stage == "polish" else "translated_text"
         parts += ["## 交付（一次写完）",
                   f"- 用一次 Write 把全部结果写到 `{out_file}`：每行一个 JSON "
-                  f"`{{\"text_index\": N, \"{key}\": \"…\"}}`，段数、顺序与下面一致，<i>/<b> 成对保留。",
+                  f"`{{\"text_index\": N, \"{key}\": \"…\"}}`，段数、顺序与下面一致，<i>/<b> 成对保留，⟦n⟧ 链接占位符原样各留一次。",
                   "- 写完不要再读回、不要跑校验——主控会校验。"]
         if newterms_file:
             parts.append(f"- 表外新词（词汇表里没有、你自定译法或保留原文的专名/术语/新物种）写到 `{newterms_file}`，"
