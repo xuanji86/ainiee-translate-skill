@@ -108,7 +108,8 @@ mkdir -p "$WORK/work" "$WORK/out"
 ```
 
 - `--type`：`AutoType`（自动检测）、`Epub`、`Txt` 等，默认 `AutoType`。
-- 成功后打印：`parsed N items -> work/cache.json`。
+- 成功后打印：`parsed N items -> work/cache.json`。一段都没解析出来（格式不支持等）则报错退出、不写文件。
+- `--out` 已有译文时拒绝覆盖（重新解析会清空译文）；确要重来加 `--force`，旧 cache 先备份。
 - **默认只译正文**：解析后立刻跑 `scope` 划定范围（见下「步骤 2.5」）。
 - **epub 的行内排版会被保留**：源书的斜体/粗体（`<i>`、`<em>`、`<span class="italic">` 等各种写法）在 `source_text` 里统一成 `<i>…</i>` / `<b>…</b>` 标记，导出时按该段原文的实际写法还原。翻译时**原样保留标记**（见 `references/translation_rules.md`），不要再用『』手动标斜体。
 - **epub 的段内链接也会被保留**：脚注引用、超链接、锚点（`id`）、行内图片在 `source_text` 里写成 `⟦n⟧`（整个元素，照抄不译）或 `⟦n⟧…⟦/n⟧`（包住的链接文字照译），原 HTML 存在该段 `extra.epub_tokens`，导出时只还原这些存档片段。译文里每个占位符恰好一次；缺、多、改号由写回闸门以 `token_mismatch` 拒收（不受 `--allow-tag-mismatch` 豁免）。只对新解析的项目生效；存量项目 `repair` 不会补占位符。
@@ -125,9 +126,10 @@ mkdir -p "$WORK/work" "$WORK/out"
 
 按每个文件的第一段判断：章号（数字 / 罗马数字 / One / Chapter…）、Part/Book/Act、Prologue/Epilogue/Interlude、Historian's Note → 保留；
 ≤6 词的全大写或「月份 年份」分部/日期标题 → 保留（它们是正文结构）；**两份目录（ncx 与书内 Contents 页）都保留**（译完用 `cache fill-dupes --apply` 把章节标题抄过去，不必再译一遍）；
-紧跟正文文件、≥200 词的散文文件按「正文续篇」保留（防止以「NORTH WATCH CAMP, DAY 47」这类电头开头的间章正文被误排除）；紧跟「Part One」的短文件是分部副标题：标题保留，其后整段斜体的题记排除；其余排除。
+最近一个保留的正文文件之后、≥200 词的散文文件按「正文续篇」保留（防止以「NORTH WATCH CAMP, DAY 47」这类电头开头的间章正文被误排除）；以「For …」开头的文件不足 200 词才当献词；紧跟「Part One」的短文件是分部副标题：标题保留，其后整段斜体的题记排除；其余排除。
 要把某段范围拉回翻译（本书例外要译题记等）：`cache set-status work/cache.json --range 38-50 --from 7 --to 0 --apply`。
-预览里判错的用 `--keep <id>` / `--drop <id>` 纠正。三本实测书的非正文只占 1–1.7% 字数——省的主要是 agent 的注意力和一批无谓的审核，不是大钱。
+预览里判错的用 `--keep <id>` / `--drop <id>` 纠正；已 `--apply` 过的书再 `--apply --keep <id>`，该文件已排除、无译文的段恢复成未译。
+单个 txt（没有文件结构）和以非拉丁文字为主的源文，`scope` 只打印一句说明、不做任何标记——目前只适用英文源文。三本实测书的非正文只占 1–1.7% 字数——省的主要是 agent 的注意力和一批无谓的审核，不是大钱。
 
 ## 步骤 2 附：修复存量项目的行内标记与空格（`repair`）
 
@@ -146,7 +148,7 @@ v1.4.1 及更早版本的 epub 解析用 `soup.get_text(strip=True)` 抽文本�
 <PFX> -m ainiee_translate.repair ~/my-project/work/cache.json --list-marked
 ```
 
-只改 `source_text`，不动译文与状态。补回的标记不会自动进旧译文，所以：
+只改 `source_text`，不动译文与状态；已带 `⟦n⟧` 占位符的段（新版解析）跳过，预览里单列跳过数。补回的标记不会自动进旧译文，所以：
 `--apply` 之后跑 `--list-marked`，把列出的段重做后用 `batch apply`（按段保住原状态）写回即可。
 
 ---
@@ -221,7 +223,7 @@ v1.4.1 及更早版本的 epub 解析用 `soup.get_text(strip=True)` 抽文本�
 - 列出/查看：`<PFX> -m ainiee_translate.module list` / `show <名字>`
 - 加载进项目：`<PFX> -m ainiee_translate.module load <名字> --work ~/my-project`
 
-加载只是把模块的 `translate_prompt.md`→`work/user_prompt.md`、`polish_prompt.md`、`glossary.locked.json` 拷进项目 `work/`——即后续步骤本就在读的文件。**不用模块的项目，流程与下文完全一致。** 此外 `prompt.py` 还能从 AiNiee 配置/profile 提取所选系统提示词（`--translate-system`）与润色提示词（`--polish`）。命令行入口见附录 C。
+加载只是把模块的 `translate_prompt.md`→`work/user_prompt.md`、`polish_prompt.md`、`glossary.locked.json` 拷进项目 `work/`——即后续步骤本就在读的文件（模块里空白的提示词、没有条目的词汇表不覆盖项目里已有的非空文件；模块词汇表比项目表少条目时照常覆盖并备份，打印少了几条）。**不用模块的项目，流程与下文完全一致。** 此外 `prompt.py` 还能从 AiNiee 配置/profile 提取所选系统提示词（`--translate-system`）与润色提示词（`--polish`）。命令行入口见附录 C。
 
 ---
 
@@ -305,7 +307,9 @@ v1.4.1 及更早版本的 epub 解析用 `soup.get_text(strip=True)` 抽文本�
 ```
 
 - 写回前自动创建带时间戳的备份 `cache.json.bak.YYYYMMDD_HHMMSS`（默认只保留最近 10 个，`AINIEE_BACKUP_KEEP` 可调，0 = 不清理；手工备份如 `cache.json.pre_xxx` 不受影响）；写入是原子的（临时文件 + rename），并持有 `cache.json.lock` 文件锁。
-- **写回闸门**：空译文、`⟦n⟧` 链接占位符没有各留一次、`<i>`/`<b>` 数量与源文不符、未知 `text_index` 一律拒收并逐条列出，其余照写；退出码 1 表示有拒收。项目规则允许标记数变化（如中译书名从 `<i>` 改《》）时加 `--allow-tag-mismatch`；`--force` 只保留「未知 index」这一条拒收。同时统计风格警告（半角标点、「」、长度比异常等，见 `audit`）。
+- **写回闸门**：空译文、`⟦n⟧` 链接占位符没有各留一次、`<i>`/`<b>` 数量与源文不符、未知 `text_index` 一律拒收并逐条列出，其余照写；退出码 1 表示有拒收。项目规则允许标记数变化（如中译书名从 `<i>` 改《》）时加 `--allow-tag-mismatch`；`--force` 只放行这类 lint 拒收。同时统计风格警告（半角标点、「」、长度比异常等，见 `audit`）。
+- **只写未译段**：段已是已译 / 已润色 / 已排除时拒收（`already_translated` / `already_polished` / `excluded`），防止旧的 `trans_N.jsonl` 把润色、修正过的译文盖回初译。改已有译文用 `batch apply`；确要整段重译加 `--overwrite`。`--force` 不放行这一条。
+- **不改回受保护修正**：新文本带回 `dual`/`codex`/`user`/`editor` 修正删掉的说法时拒收 `reverts_fix`（`polish write`、不带受保护来源的 `batch apply` 同样），`--force` 不放行；确要改回用 `batch apply --source user`。
 - 可以一次给多个文件，也接受 **JSONL**（每行一个 `{"text_index","translated_text"}`）：`batch write cache.json t1.json t2.jsonl …`——一次备份、一次加载、一次保存。
 - 成功后打印：`applied N of M`。重复执行步骤 5a → 5c 直到 `batch read` 返回空数组（`[]`）为止。
 
@@ -352,12 +356,14 @@ agent 的最终消息只回段数、新词数和 ≤5 条拿不准的。并行 a
 - 输出文件名带 `_translated` 后缀（默认），例如 `book_translated.epub`。
 - **定稿**：加 `--finalize [--title …] [--name …] [--deliver /path/CHN/书名.epub]` → 改中文元数据（书名、`zh-CN`、**固定 identifier**，存在 `work/export.json`）、
   检查 XML/链接/锚点、核对每个已译段都在成品里，再复制到交付目录。不再需要每本书自写 finalize 脚本。
+- 导出时打印未译段（状态 0、源文非空）计数；`--finalize` 下有未译段即失败并列出段号，确要先出半成品加 `--allow-partial`。
+- 某个文件的格式没有 writer（PDF/Office 且未设 `AINIEE_REPO`）时，不再静默跳过：报出文件名、退出码 1。
 
 ---
 
 ## 步骤 6.5：润色（可选）
 
-若当前模块带 `polish_prompt.md`（已随加载落到 `work/`），可对已译文本做润色 pass：状态 TRANSLATED→POLISHED，可断点续跑；导出读 `final_text`，自动采用润色后的文本。模块无润色提示词则跳过本步。
+若当前模块带非空的 `polish_prompt.md`（已随加载落到 `work/`），可对已译文本做润色 pass：状态 TRANSLATED→POLISHED，可断点续跑；导出读 `final_text`，自动采用润色后的文本。模块无润色提示词则跳过本步。
 
 循环直到 `batch read-translated` 返回 `[]`：
 1. `<PFX> -m ainiee_translate.batch read-translated work/cache.json --size 100` → `{text_index, source_text, translated_text}` 数组。
@@ -483,7 +489,7 @@ export WORK=~/my-book
 PFX="PYTHONPATH=$SKILL_DIR/scripts $AINIEE_PY"
 
 # 解析
-$PFX -m ainiee_translate.parse --input book.epub --type AutoType --out "$WORK/work/cache.json"
+$PFX -m ainiee_translate.parse --input book.epub --type AutoType --out "$WORK/work/cache.json"   # 已有译文的 cache 拒绝覆盖（--force 先备份）
 $PFX -m ainiee_translate.scope "$WORK/work/cache.json" [--apply] [--keep ID…] [--drop ID…]   # 只译正文 + Historian's Note
 
 # 词汇表
@@ -495,7 +501,7 @@ $PFX -m ainiee_translate.prompt --config "~/Library/Application Support/AiNiee/c
 # 批次读取
 $PFX -m ainiee_translate.batch read "$WORK/work/cache.json" --size 100
 
-# 批次写回（新译）/ 修正写回（保状态、可 patches、记来源）
+# 批次写回（只写未译段；整段重译加 --overwrite）/ 修正写回（保状态、可 patches、记来源）
 $PFX -m ainiee_translate.batch write "$WORK/work/cache.json" "$WORK/work/translations_001.json"
 $PFX -m ainiee_translate.batch apply "$WORK/work/cache.json" fixes.jsonl --source codex
 
@@ -506,7 +512,7 @@ $PFX -m ainiee_translate.cache stats|show|dump|set-status|fill-dupes "$WORK/work
 $PFX -m ainiee_translate.state settle|errata|tag-exception|lint-rule|card|show "$WORK/work/cache.json" …
 
 # 导出
-$PFX -m ainiee_translate.export --cache "$WORK/work/cache.json" --output "$WORK/out/" --input book.epub [--finalize --deliver …]
+$PFX -m ainiee_translate.export --cache "$WORK/work/cache.json" --output "$WORK/out/" --input book.epub [--finalize [--allow-partial] --deliver …]
 
 # 验证
 $PFX -m ainiee_translate.verify "$WORK/work/cache.json" "$WORK/work/glossary.locked.json" [--baseline known.json] [--json]
@@ -556,7 +562,7 @@ A: 所有段落均已翻译完毕（`translation_status = TRANSLATED`），可�
 A: 检查 `cache.json` 中是否有 `translation_status = 1` 的段落（即已译段）。可用 `batch read` 确认剩余未译数量。
 
 **Q: 如何重做某段译文？**
-A: 直接用 `batch write` 写入新的 `translated_text`（按 `text_index` 覆盖），`write_back` 会用新值替换旧值。
+A: 改几处用 `batch apply`（`{text_index, translated_text}` 或 `patches`，保住状态、可 `--source` 记来源）；整段重译后用 `batch write --overwrite` 写回（状态回到 TRANSLATED）。不带 `--overwrite` 的 `batch write` 会以 `already_translated` / `already_polished` 拒收已有译文的段。
 
 **Q: 如何跳过不需要翻译的段落（如纯数字章节号）？**
 A: 在 `translations.json` 中将 `translated_text` 设为源文原样，或在生成时 agent 判断后直接复制源文。

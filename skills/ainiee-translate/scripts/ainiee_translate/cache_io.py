@@ -140,7 +140,7 @@ def patched_text(current: str, patches) -> str | None:
 
 
 def apply_writeback(cache_path: str, items: list[dict], status, get_text,
-                    check=None, force: bool = False) -> WriteResult:
+                    check=None, force: bool = False, guard=None) -> WriteResult:
     """Lock → backup → load → for each item: gate → mutate → atomic save.
 
     `status` None keeps each segment's status (TRANSLATED stays, POLISHED stays; an
@@ -149,7 +149,9 @@ def apply_writeback(cache_path: str, items: list[dict], status, get_text,
     segment's current text (each `old` exactly once, else rejected `patch_not_found`).
     `check(cache_item, text) -> (hard: list[str], soft: list[str])` is the write
     gate: any hard reason rejects the item (unless force=True); soft reasons are
-    tallied into WriteResult.warnings. Unknown text_index is always rejected."""
+    tallied into WriteResult.warnings. Unknown text_index is always rejected.
+    `guard(cache_item, text) -> reason | None` rejects regardless of `force` (state checks
+    such as "already translated" or "brings back a protected fix", not lint)."""
     res = WriteResult(total=len(items))
     with locked(cache_path):
         helpers.backup_file(cache_path)
@@ -168,6 +170,10 @@ def apply_writeback(cache_path: str, items: list[dict], status, get_text,
                     continue
             else:
                 text = get_text(it)
+            why = guard(item, text) if guard is not None else None
+            if why:
+                res.rejected.append({"text_index": ti, "reason": why})
+                continue
             if check is not None:
                 hard, soft = check(item, text)
                 if hard and not force:

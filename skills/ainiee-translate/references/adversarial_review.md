@@ -16,7 +16,7 @@ ch2–5 仍抓出 ~80 段问题——几乎全是词法/搭配层（非词、固
 
 试点书（ch2–5 人工校对做基准）：召回 71–75%（剔除答案泄露后）、Challenger 精度 87–91%，
 且 Reviewer 报出而人工没改的段抽查 14/16 是人工漏掉的真问题。Challenger 否掉的典型：「护盾已落」（与「升起护盾」
-成对）、「在 Varek **闻**来」（Vor'tash 靠嗅觉判人）、「失压体验」（作者冷幽默）——单 agent 审校会把这些改坏。
+成对）、「在 Hale **闻**来」（Korin 族靠嗅觉判人）、「失压体验」（作者冷幽默）——单 agent 审校会把这些改坏。
 
 **盲读基准（v1.11，同书 ch6–10）**：用户在阅读器里逐句读出并亲手改过的 27 段，旧 Reviewer（带源文）覆盖 19 段，
 只读中文的 Blind Reader 覆盖 24 段，且标的就是用户改的那句；仍漏的 3 段全是舰桥口令／技术动词。所以盲读放在 Reviewer 之前。
@@ -48,7 +48,7 @@ Blind flag 93% 被 Reviewer 落成 finding，69% 的 finding 来自 flag——**
   Blind Reader / Challenger 换小模型**未做基准**，要换先在人工校过的章节上 `benchmark/score`。
 - 组大小：`--target 140` 是按 Reviewer 上下文定的，别为省固定开销加大——Reviewer 的输出（builder 里的整句重写）才是大头。
 
-## 精简协议（v1.16，《星际迷航 下一代：抵抗》1960 段 / 16 组实测）
+## 精简协议（v1.16，一本试点书 1960 段 / 16 组实测）
 
 按 v1.13 协议跑了 g1–g4 后精简，后 12 组按精简版跑完：
 
@@ -96,8 +96,13 @@ Blind flag 93% 被 Reviewer 落成 finding，69% 的 finding 来自 flag——**
 - `proposed` 不得增删 `<i>/<b>`；不得改动任何拉丁字母 token——A 类补回漏译专名除外，需 `"latin_change":true`，且**转人工**不自动应用。
 - `severity`：3 意思错/读不通，2 明显别扭，1 可改可不改。
 
-verdict：`{"id":…,"verdict":"accept|reject|amend","amended":"…","reason":"…"}`。Challenger 在 reason 里写
-「降为 C」「应为 B」之类，`review final` 会按它改类别；写 `severity 2 改为 1` 会改严重度。
+verdict：`{"id":…,"verdict":"accept|reject|amend","amended":"…","category":"C","severity":1,"reason":"…"}`。
+- `verdict` 只认 `accept` / `reject` / `amend`（大小写、首尾空白不计）；其它取值（`rejected`、`否决`…）和缺非空 `amended` 的
+  `amend` 一律拒收（`bad_verdict:<原值>`），不写回。
+- 改类、改严重度用字段 `category`（A–D）/ `severity`（1–3），优先于 reason；取值非法同样 `bad_verdict` 拒收。
+  没有字段时才从 reason 里认「降为 C」「severity 2 改为 1」之类，且**只许降级**：自由文本不能把 C/D 改成 A/B
+  （「不应改为 A，维持 C」会被正则误读）。要把 C 升成 A/B 必须写 `category` 字段。
+- `final` / `merge` / `pick` 走同一个 `resolve()`：被拒、缺 verdict、amend 过闸失败的条目不会出现在过目表或 `apply_pick.json`。
 
 ## 目录（默认 `<PROJ>/work/review/`）
 
@@ -120,8 +125,8 @@ review/
 ### config.json
 
 ```json
-{"redline": ["Vor[’']tash|沃塔什", "</i> 号", "上校|舰长|中校|指挥官", "隐形|遁形"],
- "settled": ["Berzel 平原", "鉴证", "突击队"],
+{"redline": ["Korin|科林", "</i> 号", "上校|舰长|中校|指挥官", "隐形|遁形"],
+ "settled": ["Highmark 平原", "鉴证", "突击队"],
  "glossary_settled": true,
  "forbid": "[「」\"]",
  "term_only": [["Mara 舰长", "Mara 上校"], ["遁形", "隐形"]],
@@ -134,10 +139,10 @@ review/
   `竖发→刺猬似短发`（子串里带着没动的「安全官」），别走回头路。
 - `settled`：定稿术语，**只许加不许删**——改向定稿是对的（数据恢复队→组），从 offending 里删掉不行。
   `glossary_settled`（默认 true）把词汇表所有 `dst` 也当定稿术语。两条放行规则（v1.16）：
-  1. 换成**包含原词的更长定稿词**不算删除（`医生→首席医生`、`博格→博格女王`）；定稿词按长度优先匹配。
+  1. 换成**包含原词的更长定稿词**不算删除（`医生→首席医生`、`翠鸟号→翠鸟号舰长`）；定稿词按长度优先匹配。
   2. 词汇表 `dst` 常是脱离语境的短词，它本身就可能是误译（`Doctor→医生` 撞上 `chief medical officer`；泛指的
      `an admiral` 被译成军衔「上将」）。**A 类** finding 可以删掉**只来自词汇表**的定稿词（`config.json` 的 `settled` 仍是硬约束），
-     这种条目带 `_settled_override` 且**永远送 Challenger**。《抵抗》里 `首先是医生→首先是首席医疗官`、`上将的访问码→将官的访问码`
+     这种条目带 `_settled_override` 且**永远送 Challenger**。试点书里 `首先是医生→首先是首席医疗官`、`上将的访问码→将官的访问码`
      原先都被 `E_settled_removed` 误拦，只能主控强写。
   B/C 类改掉语境依赖的词条（`crew` 舰上「船员」/站上「站上人员」）仍会被拒，看 `rejected_X.jsonl` 里的 `E_settled_removed` 手工放行。
 - `forbid`：绝不允许引入的字符（默认「」和 ASCII 引号）。`soft_block`：不得新增的 audit 软问题（默认半角标点/「」/…）。
@@ -183,8 +188,10 @@ review/
 
 闸门顺序（`review pre` 逐条）：必填字段 → 类别 ∈ A–D → `offending` 恰好一次 → 红线/定稿/禁字 →
 `<i>/<b>` 成对（`audit.lint_pair`）→ 不新增 `soft_block` 软问题 → 拉丁 token 多重集不变（除 A+`latin_change` → 转人工）。
-`review final`：reject 丢弃；amend 用 `amended` 重过闸门；同一段多条按顺序叠加到同一份文本再查一次标记；
-无 `verdicts_X.jsonl` 的组（如 D）全部进过目表。
+`review final`：reject / 非法 verdict 丢弃；amend 用 `amended` 重过闸门；同一段多条按顺序叠加到同一份文本再查一次标记。
+从没送审的组（无 `challenge_X` / `verdicts_X` / `verdicts_X.auto` 文件，如 D）全部进过目表，**一条也不自动写回**；
+送审了但 `verdicts_X.jsonl` 没落地 → 送审条目按 `challenger:no_verdict` 拒收（打 WARNING），verdicts 到了再跑 `final`。
+`pick` 在当前 cache 文本上对每条重跑整套闸门（`check()`）。
 
 **铁律**：subagent 只写 `$REV/` 下自己的文件，不碰 `cache.json`、不跑 `ainiee_translate` 任何写命令。
 

@@ -165,7 +165,8 @@ def _writer_type_for(cache_file, storage_path: str) -> str | None:
     return cands[-1] if cands else None      # generic fallback (e.g. Xlsx) when type unknown
 
 
-def export_project(project, output_path: str, input_path: str, config: dict | None = None) -> None:
+def export_project(project, output_path: str, input_path: str, config: dict | None = None) -> list[str]:
+    """Write every file that has a writer; returns the storage paths that had none (not exported)."""
     config = config or {}
     out_root = Path(output_path)
     in_path = Path(input_path)
@@ -177,9 +178,11 @@ def export_project(project, output_path: str, input_path: str, config: dict | No
     except ValueError:
         order = BilingualOrder.TRANSLATION_FIRST
 
+    skipped = []
     for storage_path, cache_file in project.files.items():
         ptype = _writer_type_for(cache_file, storage_path)
         if ptype is None:
+            skipped.append(storage_path)
             continue
         ext = Path(storage_path).suffix.lstrip(".").lower() or ptype.lower()
         writer = FORMATS[ptype][1](OutputConfig(
@@ -194,6 +197,7 @@ def export_project(project, output_path: str, input_path: str, config: dict | No
             out_file = tcfg.output_root / _with_suffix(storage_path, tcfg.name_suffix)
             out_file.parent.mkdir(parents=True, exist_ok=True)
             getattr(writer, mode.write_method)(out_file, cache_file, source_file_path)
+    return skipped
 
 
 def main(argv=None):
@@ -204,19 +208,18 @@ def main(argv=None):
     p.add_argument("--type", default="AutoType")
     p.add_argument("--exclude", default="")
     p.add_argument("--out", default="cache.json")
+    p.add_argument("--force", action="store_true", help="replace an --out cache that already has translations")
     e = sub.add_parser("export")
     e.add_argument("--cache", required=True)
     e.add_argument("--output", required=True)
     e.add_argument("--input", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "parse":
-        proj = parse_input(a.input, a.type, a.exclude)
-        cache_io.save_cache(proj, a.out)
-        print(f"parsed {proj.count_items()} items -> {a.out}")
-    elif a.cmd == "export":
-        export_project(cache_io.load_cache(a.cache), a.output, a.input)
-        print(f"exported -> {a.output}")
+        from .parse import save_parsed
+        return save_parsed(parse_input(a.input, a.type, a.exclude), a.out, a.force)
+    from .export import report_skipped
+    return report_skipped(export_project(cache_io.load_cache(a.cache), a.output, a.input), a.output)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -49,3 +49,51 @@ def test_cli_write_missing_file_errors(make_project, tmp_path):
     cache = tmp_path / "cache.json"; cache_io.save_cache(proj, str(cache))
     with pytest.raises(SystemExit):
         batch.main(["write", str(cache), str(tmp_path / "nope.json")])
+
+
+def _rows(path, rows):
+    import json
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+    return str(path)
+
+
+def test_write_rejects_finished_segments_unless_overwrite(make_project, tmp_path, capsys):
+    """A stale trans_N.jsonl must not put first-draft text back over a translated/polished segment."""
+    from ainiee_translate._vendor.ModuleFolders.Service.Cache.CacheItem import TranslationStatus as S
+    proj = make_project(n=3, project_id="t")
+    cache_io.set_translation(proj, 1, "初译1")
+    cache_io.set_polish(proj, 2, "润色2")
+    cache = tmp_path / "cache.json"; cache_io.save_cache(proj, str(cache))
+    stale = _rows(tmp_path / "trans_1.jsonl", [{"text_index": i, "translated_text": f"旧{i}"} for i in (1, 2, 3)])
+    assert batch.main(["write", str(cache), stale, "--force"]) == 1          # --force is not the release
+    out = capsys.readouterr().out
+    assert "rejected #1: already_translated" in out and "rejected #2: already_polished" in out
+    assert "batch apply" in out and "--overwrite" in out
+    idx = cache_io.index_items(cache_io.load_cache(str(cache)))
+    assert idx[1].translated_text == "初译1" and idx[2].translated_text == "润色2"
+    assert idx[2].translation_status == S.POLISHED and idx[3].translated_text == "旧3"   # the fresh one landed
+    dup = _rows(tmp_path / "dup.jsonl", [{"text_index": 3, "translated_text": "新3"}])
+    proj = cache_io.load_cache(str(cache)); idx = cache_io.index_items(proj)
+    idx[3].translation_status, idx[3].translated_text = S.UNTRANSLATED, ""
+    cache_io.save_cache(proj, str(cache))
+    assert batch.main(["write", str(cache), stale, dup, "--force"]) == 1       # #1/#2 still rejected
+    assert cache_io.index_items(cache_io.load_cache(str(cache)))[3].translated_text == "新3"   # last one wins
+    assert batch.main(["write", str(cache), stale, "--overwrite"]) == 0
+    idx = cache_io.index_items(cache_io.load_cache(str(cache)))
+    assert idx[2].translated_text == "旧2" and idx[2].translation_status == S.TRANSLATED
+
+
+def test_write_and_apply_refuse_to_bring_back_a_protected_fix(make_project, tmp_path, capsys):
+    proj = make_project(n=1, project_id="t")
+    cache_io.set_translation(proj, 1, "他不计一切地冲了出去。")
+    cache = tmp_path / "cache.json"; cache_io.save_cache(proj, str(cache))
+    fix = _rows(tmp_path / "fix.jsonl", [{"text_index": 1, "translated_text": "他不顾安危地冲了出去。"}])
+    assert batch.main(["apply", str(cache), fix, "--source", "user"]) == 0
+    back = _rows(tmp_path / "back.jsonl", [{"text_index": 1, "translated_text": "他不计一切地冲出去了。"}])
+    for argv in (["write", str(cache), back, "--overwrite", "--force"],
+                 ["apply", str(cache), back], ["apply", str(cache), back, "--source", "adversarial"]):
+        assert batch.main(argv) == 1
+        assert "reverts_fix" in capsys.readouterr().out
+    assert cache_io.index_items(cache_io.load_cache(str(cache)))[1].translated_text == "他不顾安危地冲了出去。"
+    assert batch.main(["apply", str(cache), back, "--source", "editor"]) == 0      # a protected source may undo it
+    assert cache_io.index_items(cache_io.load_cache(str(cache)))[1].translated_text == "他不计一切地冲出去了。"

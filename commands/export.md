@@ -13,3 +13,4 @@ PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" \
 `--finalize` 读 `work/export.json`（书名、`zh-CN`、**固定 identifier**、交付路径 `deliver`；首次导出自动生成 identifier，之后不变），
 改元数据、查 XML/链接/锚点、核对每个已译段都在成品里，再复制到 `deliver`。第一次可带 `--title … --name … --deliver …` 写进配置。
 完成后报告成品路径、核对段数与 warnings（源书自带的坏链接只警告）。
+还有未译段时 `--finalize` 会失败并列出段号：先把它们译完；用户确认要先出半成品时才加 `--allow-partial` 重跑。

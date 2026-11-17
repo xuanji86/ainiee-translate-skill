@@ -136,6 +136,9 @@ done
 - 所有组**一次**锁定/备份/加载/保存；同一 index 出现在两个文件里会拒绝（`--force` 让后者胜出）。
 - 写回闸门与 validate 相同：空译、标记不匹配、未知 index 一律拒收并列出，其余照写；退出码 1 表示有拒收。
   项目规则允许标记数变化（如中译书名从 `<i>` 换成《》）时加 `--allow-tag-mismatch`。
+- `write` 只写未译段：已写回（或已润色、已修正）的段再写会以 `already_translated` / `already_polished` 拒收、不改数据。
+  分波时只给**本波**的 `trans_N.jsonl`（上一波的文件留在 `par/` 里也不会盖回去，只是多一串拒收）；
+  某组确要整组重译，用 `batch write … --overwrite`。
 - 然后：
   ```bash
   <PFX> -m ainiee_translate.glossary merge-newterms --locked <PROJ>/work/glossary.locked.json <PROJ>/work/par/newterms_*.txt --apply
