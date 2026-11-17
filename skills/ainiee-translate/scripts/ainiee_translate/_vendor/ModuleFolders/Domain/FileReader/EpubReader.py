@@ -43,20 +43,104 @@ def mark_for(tag: Tag) -> str | None:
     return None
 
 
+# 链接 / 锚点占位符：段内的脚注引用、<a href>、带 id 的锚点、行内图片在
+# source_text 里写成 ⟦n⟧（整个元素，不译）或 ⟦n⟧…⟦/n⟧（元素包住的文字照译），
+# 原 HTML 存在 extra["epub_tokens"]，导出时只有这些存档片段会还原成标签。
+TOKEN_RE = re.compile(r"⟦/?\d+⟧")
+_ONLY_TOKENS = re.compile(r"(?:\s*⟦\d+⟧)+\s*")
+_NOTE_LABEL = re.compile(r"[\[(]?(?:\d{1,3}|[a-z]|[*†‡§¶#※⁎⁑⁂]{1,3}|[¹²³⁴⁵⁶⁷⁸⁹⁰]{1,3})[\])]?\.?")
+_ATOMIC_TAGS = ("img", "image", "svg")
+
+
+def _has_link_or_anchor(tag: Tag) -> bool:
+    return bool(tag.has_attr("id") or tag.has_attr("xml:id")
+                or (tag.name == "a" and (tag.has_attr("href") or tag.has_attr("name"))))
+
+
+def _is_note_reference(tag: Tag) -> bool:
+    """脚注/尾注引用：指向书内某处的链接，且文字只是序号或符号（1、[2]、*、†）。"""
+    if tag.name != "a" or "#" not in str(tag.get("href", "")):
+        return False
+    semantics = " ".join([str(tag.get("epub:type", "")), str(tag.get("role", ""))]
+                         + list(tag.get("class") or ())).lower()
+    if any(w in semantics for w in ("noteref", "footnote", "endnote")):
+        return True
+    return _NOTE_LABEL.fullmatch(tag.get_text().strip()) is not None
+
+
+def _attr_escape(s) -> str:
+    return str(s).replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _open_tag(tag: Tag) -> str:
+    attrs = "".join(' {}="{}"'.format(k, _attr_escape(" ".join(v) if isinstance(v, list) else v))
+                    for k, v in tag.attrs.items())
+    return f"<{tag.name}{attrs}>"
+
+
 def extract_text_with_marks(html: str) -> str:
-    """把标签内容抽成纯文本，但保留内联强调为 <i>/<b> 标记。
+    """把标签内容抽成纯文本，但保留内联强调为 <i>/<b> 标记（不出链接占位符）。
 
     同时修掉 soup.get_text(strip=True) 的老问题：它对每个文本片段单独 strip
     再无缝拼接，会把 "her <i>blade</i> fell" 挤成 "herbladefell"。这里保留
     片段间空白，最后统一折叠。
     """
-    def walk(node) -> str:
+    return _extract(html, None)
+
+
+def extract_text_and_tokens(html: str) -> tuple[str, dict]:
+    """同 extract_text_with_marks，另把段内链接/锚点/图片换成 ⟦n⟧ 占位符。
+    返回 (文本, {"1": 整元素 HTML, "2": 开标签, "/2": 闭标签, …})，编号按出现顺序从 1 起。"""
+    tokens: dict = {}
+    text = _extract(html, tokens)
+    if not tokens:
+        return text, {}
+    order: dict = {}
+    for m in TOKEN_RE.finditer(text):
+        order.setdefault(m.group().strip("⟦⟧/"), str(len(order) + 1))
+
+    def renum(m):
+        old = m.group().strip("⟦⟧/")
+        return m.group().replace(old, order[old])
+    out = {}
+    for k, v in tokens.items():
+        old = k.lstrip("/")
+        if old in order:
+            out[k.replace(old, order[old])] = v
+    return TOKEN_RE.sub(renum, text), out
+
+
+def _extract(html: str, tokens) -> str:
+    counter = [0]
+
+    def atom(node: Tag) -> str:
+        counter[0] += 1
+        tokens[str(counter[0])] = str(node)
+        return f"⟦{counter[0]}⟧"
+
+    def walk(node, depth: int) -> str:
         if isinstance(node, NavigableString):
             return str(node)
         if not isinstance(node, Tag):
             return ""
-        inner = "".join(walk(c) for c in node.children)
+        # 段落根元素自身的属性由 EpubWriter 复刻，只给后代出占位符
+        tokenize = tokens is not None and depth > 0
+        if tokenize and (node.name in _ATOMIC_TAGS or _is_note_reference(node)
+                         or (_has_link_or_anchor(node) and not node.get_text().strip())):
+            return atom(node)
+        if tokenize and _has_link_or_anchor(node):
+            counter[0] += 1
+            n = str(counter[0])
+            tokens[n], tokens["/" + n] = _open_tag(node), f"</{node.name}>"
+            inner = "".join(walk(c, depth + 1) for c in node.children)
+            return f"⟦{n}⟧{inner}⟦/{n}⟧"
+        inner = "".join(walk(c, depth + 1) for c in node.children)
         mark = mark_for(node)
+        if tokenize and mark is None and _ONLY_TOKENS.fullmatch(inner):
+            # <sup><a href="#n1">1</a></sup>：外层只包着占位符，整个元素收成一个
+            for t in TOKEN_RE.findall(inner):
+                tokens.pop(t.strip("⟦⟧"), None)
+            return atom(node)
         if mark and inner.strip():
             # 同类标记嵌套（<span class="italic"><span><i>x</i></span></span>）不重复包裹
             if inner.startswith(f"<{mark}>") and inner.endswith(f"</{mark}>"):
@@ -65,7 +149,7 @@ def extract_text_with_marks(html: str) -> str:
         return inner
 
     soup = BeautifulSoup(html, "html.parser")
-    text = "".join(walk(c) for c in soup.contents)
+    text = "".join(walk(c, 0) for c in soup.contents)
     text = text.replace("\u00a0", " ")
     text = re.sub(r"[ \t\r\n\u3000]+", " ", text).strip()
     # 标记贴边的空白挪到标记外，保证 "<i>x</i>" 内部不带首尾空格
@@ -132,9 +216,9 @@ class EpubReader(BaseSourceReader):
 
                 # 提取纯文本，并处理嵌套标签
                 soup = BeautifulSoup(html_text_C, 'html.parser')
-                text_content = extract_text_with_marks(html_text_C)
+                text_content, tokens = extract_text_and_tokens(html_text_C)
 
-                if not text_content:  # 检查一下是否提取到空文本内容
+                if not TOKEN_RE.sub("", text_content).strip():  # 空文本，或只有图片/锚点
                     continue
 
                 if forbidden_tags:
@@ -148,6 +232,8 @@ class EpubReader(BaseSourceReader):
                     "tag_type": tag_type_refined,
                     "item_id": item_id,
                 }
+                if tokens:
+                    extra["epub_tokens"] = tokens
                 items.append(CacheItem(source_text=text_content, extra=extra))
         return items
 

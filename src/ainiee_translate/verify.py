@@ -1,5 +1,7 @@
 """Residual rule checks over translated items (does not need AiNiee).
-Checks: empty translation (omission) + verbatim-name preservation.
+Checks: empty translation (omission) + verbatim-name preservation + term
+rendering (`term_missing`: a glossary term with a `dst` occurs in the source,
+but none of its renderings appears in the translation).
 Language-agnostic: the name check fires for any glossary `render`/alias that
 appears verbatim in the source but is missing from the translation (most
 effective for Latin-script names; degrades gracefully for other scripts).
@@ -42,7 +44,9 @@ TITLES = {
     "commodore", "subcommander", "centurion", "legate", "gul", "kai", "vedek", "father", "mother", "brother",
     "sister", "master", "mistress", "minister", "chancellor", "governor", "director", "agent", "specialist",
 }
-_TAGS = re.compile(r"</?[ib]>")
+_TAGS = re.compile(r"</?[ib]>|⟦/?\d+⟧")
+#: Term categories whose rendering legitimately varies by context (a rank depends on who holds it).
+_VARYING = {"rank", "title", "role"}
 #: "Will you…", "Will we…": a modal verb, not the name Will.
 _AUX_NEXT = re.compile(r"\s+(?:you|we|i|they|he|she|it|your|our|this|that|there|the|a|an|not|anyone|someone|everyone)\b", re.I)
 
@@ -84,6 +88,7 @@ def check_items(items: list[dict], locked: dict) -> list[dict]:
                 names.append(n)
     names = list(dict.fromkeys(names))  # de-dup, keep order
     titles = _title_words(locked)
+    terms = _term_patterns(locked)
     for it in items:
         if it.get("translation_status") not in CHECKED_STATUSES:
             continue
@@ -103,7 +108,66 @@ def check_items(items: list[dict], locked: dict) -> list[dict]:
                 continue
             issues.append({"kind": "name_not_preserved", "text_index": it["text_index"],
                            "detail": f"{name} in source, not preserved in translation"})
+        for miss in term_issues(src, tgt, terms):
+            issues.append({"kind": "term_missing", "text_index": it["text_index"],
+                           "detail": f"{miss}: term in source, rendering not in translation"})
     return issues
+
+
+def _term_patterns(locked: dict) -> list[tuple[str, list[str], re.Pattern]]:
+    """Glossary terms that must show up translated: (src, renderings, source pattern), longest
+    first so a longer term claims its span before a shorter one inside it ("Arden of Vel" vs "Vel").
+    `dst` may list alternatives as "a/b" or "a|b". Lower-case terms match any case and plural -s."""
+    out = []
+    for t in locked.get("terms", []):
+        src, dst = (t.get("src") or "").strip(), (t.get("dst") or "").strip()
+        if not src or not dst or t.get("keep_source") or str(t.get("category", "")).lower() in _VARYING:
+            continue
+        if normalize_apostrophes(src).lower() == normalize_apostrophes(dst).lower():
+            continue
+        body = re.escape(normalize_apostrophes(src))
+        common = src == src.lower()
+        pat = re.compile(rf"(?<![A-Za-z]){body}{'(?:e?s)?' if common else ''}(?![A-Za-z])",
+                         re.IGNORECASE if common else 0)
+        out.append((src, _renderings(dst), pat))
+    out.sort(key=lambda x: -len(x[0]))
+    return out
+
+
+_CJK_END = re.compile(r"[\u3400-\u9fff]$")
+
+
+def _renderings(dst: str) -> list[str]:
+    """Accepted forms of a `dst`: each "/"- or "|"-separated alternative, plus its stem when the
+    term works as a modifier ("科瓦尼人" → "科瓦尼" in 科瓦尼巡洋舰, "升降机" → "升降" in 升降台)
+    and the last word of a spaced rendering ("王国飞艇 翠鸟号" → "翠鸟号")."""
+    out = []
+    for d in (x.strip() for x in re.split(r"[/|]", dst)):
+        if not d:
+            continue
+        out.append(d)
+        if len(d) >= 3 and _CJK_END.search(d):
+            out.append(d[:-1])
+        if " " in d:
+            out.append(d.split()[-1])
+    return list(dict.fromkeys(out))
+
+
+def term_issues(src: str, tgt: str, terms) -> list[str]:
+    """Terms present in `src` (tags stripped) whose renderings are all absent from `tgt`."""
+    h = normalize_apostrophes(src)
+    claimed: list[tuple[int, int]] = []
+    missing = []
+    for term, renders, pat in terms:
+        hit = False
+        for m in pat.finditer(h):
+            if any(a < m.end() and m.start() < b for a, b in claimed):
+                continue
+            claimed.append(m.span())
+            hit = True
+        if hit and not any(r in tgt for r in renders):
+            missing.append(f"{term} -> {renders[0]}")
+    return missing
 
 
 def _items_for_check(cache_path: str) -> list[dict]:

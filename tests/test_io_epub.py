@@ -176,3 +176,54 @@ def test_self_marked_element_not_wrapped_twice():
     original = '<span class="italic1">Beneath the arch</span>'
     out = object.__new__(EpubWriter)._rebuild_translated_tag(original, "<i>拱门之下</i>")
     assert out == '<span class="italic1">拱门之下</span>'
+
+
+# --- 链接 / 锚点占位符 ---------------------------------------------------
+LINK_XHTML = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>t</title></head>
+<body>
+<p id="p1"><a id="page5"></a>He swore<sup><a href="notes.xhtml#n1" id="r1">1</a></sup> to return, as told in <a href="ch2.xhtml">Part <i>Two</i></a>.</p>
+<p>A map: <img src="map.png" alt="map"/> here.</p>
+<p><a href="ch3.xhtml">Chapter Three</a></p>
+<p>Plain <i>words</i>.</p>
+</body></html>"""
+
+
+def test_epub_link_tokens_roundtrip(tmp_path):
+    epub = tmp_path / "links.epub"
+    with zipfile.ZipFile(epub, "w") as z:
+        z.writestr("mimetype", "application/epub+zip")
+        z.writestr("META-INF/container.xml", CONTAINER)
+        z.writestr("content.opf", OPF)
+        z.writestr("ch1.xhtml", LINK_XHTML)
+    proj = io_dispatch.parse_input(str(epub))
+    items = list(cache_io.iter_items(proj))
+    by_src = {it.source_text: it for it in items}
+
+    s1 = "⟦1⟧He swore⟦2⟧ to return, as told in ⟦3⟧Part <i>Two</i>⟦/3⟧."
+    assert s1 in by_src
+    toks = by_src[s1].extra["epub_tokens"]
+    assert toks["1"] == '<a id="page5"></a>'
+    assert toks["2"].startswith("<sup>") and 'href="notes.xhtml#n1"' in toks["2"]
+    assert toks["3"] == '<a href="ch2.xhtml">' and toks["/3"] == "</a>"
+    assert any(s.startswith("A map: ⟦1⟧") for s in by_src)
+    assert "Chapter Three" in by_src                       # 链接是段落根：属性由 writer 复刻，不出占位符
+    assert "epub_tokens" not in by_src["Plain <i>words</i>."].extra
+
+    tr = {s1: "⟦1⟧他发誓⟦2⟧要回来，正如⟦3⟧第<i>二</i>部⟦/3⟧所述。",
+          "Chapter Three": "第三章", "Plain <i>words</i>.": "平常的<i>字</i>。"}
+    for it in items:
+        cache_io.set_translation(proj, it.text_index, tr.get(it.source_text, it.source_text.replace("A map:", "地图：")))
+    out = tmp_path / "out"
+    io_dispatch.export_project(proj, str(out), str(epub))
+    with zipfile.ZipFile(out / "links_translated.epub") as z:
+        x = z.read("ch1.xhtml").decode("utf-8")
+    assert '<p id="p1"><a id="page5"></a>他发誓<sup><a href="notes.xhtml#n1" id="r1">1</a></sup>要回来，正如<a href="ch2.xhtml">第<i>二</i>部</a>所述。</p>' in x
+    assert '<img alt="map" src="map.png"/>' in x or '<img src="map.png" alt="map"/>' in x
+    assert '<a href="ch3.xhtml">第三章</a>' in x
+    assert "⟦" not in x
+
+
+def test_extract_text_with_marks_unchanged_for_repair():
+    from ainiee_translate._vendor.ModuleFolders.Domain.FileReader.EpubReader import extract_text_with_marks
+    assert extract_text_with_marks('<p>He swore<sup><a href="#n1">1</a></sup> it.</p>') == "He swore1 it."

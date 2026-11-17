@@ -36,3 +36,17 @@ def test_audit_items_groups_by_category():
     rep = audit.audit_items(items)
     assert rep["empty"]["segments"] == [1]
     assert rep["halfwidth_punct"]["segments"] == [2]
+
+
+def test_hard_token_mismatch_not_waivable():
+    src = "He swore⟦1⟧ to return, as told in ⟦2⟧Part Two⟦/2⟧."
+    ok = "他发誓⟦1⟧要回来，正如⟦2⟧第二部⟦/2⟧所述。"
+    assert audit.hard_checks(src, ok) == []
+    assert audit.hard_checks(src, "正如⟦2⟧第二部⟦/2⟧所述，他发誓⟦1⟧要回来。") == []   # 语序可变
+    for bad in ("他发誓要回来，正如⟦2⟧第二部⟦/2⟧所述。",          # 丢脚注
+                "他发誓⟦1⟧⟦1⟧要回来，正如⟦2⟧第二部⟦/2⟧所述。",     # 重复
+                "他发誓⟦1⟧要回来，正如⟦/2⟧第二部⟦2⟧所述。",       # 先闭后开
+                "他发誓⟦1⟧要回来⟦3⟧，正如⟦2⟧第二部⟦/2⟧所述。"):    # 编造
+        assert audit.hard_checks(src, bad, allow_tag_mismatch=True) == ["token_mismatch"], bad
+    assert audit.hard_checks("Plain.", "平文⟦1⟧。") == ["token_mismatch"]
+    assert "markup_leak" not in audit.soft_checks(src, ok)
