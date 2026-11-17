@@ -597,6 +597,10 @@ def _apply_verdicts(findings: dict, verdicts: dict, segs: dict, rules: Rules):
     return per_seg, rej
 
 
+#: reject reasons only `final` writes (resolve + the apply step); everything else in rejected_X.jsonl is the gate's
+FINAL_REJECTS = ("challenger:", "bad_verdict:", "amend_failed:", "apply_conflict", "combined_tag")
+
+
 def final(paths: Paths, rules: Rules, groups: list[str]) -> list[dict]:
     out = []
     for g in groups:
@@ -643,11 +647,10 @@ def final(paths: Paths, rules: Rules, groups: list[str]) -> list[dict]:
         write_json(paths.f(f"apply_{g}.meta.json"), apply_rows)
         _write_review_md(paths.f(f"review_{g}.md"), review_rows, f"待过目（{g}）—— C/D 类与需人工的 A 类")
         # rejected_g.jsonl = the gate's rejects (from `pre`) + this run's; a rerun replaces the rows an
-        # earlier `final` appended (every one of them is a finding of the .pre file) instead of piling up
+        # earlier `final` appended (told apart by their reason) instead of piling them up
         rp = paths.f(f"rejected_{g}.jsonl")
         gate = [r for r in (read_jsonl(rp) if os.path.exists(rp) else [])
-                if not (isinstance(r.get("id"), (str, int)) and r["id"] in findings)
-                or r.get("_reject") == "duplicate_id"]
+                if not str(r.get("_reject", "")).startswith(FINAL_REJECTS)]
         write_jsonl(rp, gate + rej)
         row = {"group": g, "apply_segments": len(apply_rows), "review": len(review_rows), "rejected": len(rej)}
         out.append(row)
@@ -1064,10 +1067,19 @@ def log(paths: Paths, stage: str, group: str | None, model: str | None, agent: s
 
 
 # ------------------------------------------------- external reviewers ----
+def _clamp_sev(x) -> int:
+    """An outside reviewer's severity on our 1-3 scale: 4 / 5 / "9" -> 3, anything non-numeric -> 1.
+    (The gate only takes 1/2/3; passed through, their gravest findings would be the ones rejected.)"""
+    try:
+        return max(1, min(3, int(float(x))))
+    except (TypeError, ValueError, OverflowError):
+        return 1
+
+
 def import_findings(paths: Paths, src: str, group: str, source: str = "external") -> int:
     """Another reviewer's findings (Codex, a human, a second model) -> findings_<group>.jsonl so they
     go through the same gate (`pre`) as ours. Rows need text_index + offending + proposed;
-    category defaults to A for meaning (sev>=2) else C; ids become <group>-NNN."""
+    severity is clamped to 1-3; category defaults to A for meaning (sev>=2) else C; ids become <group>-NNN."""
     rows = read_jsonl(src) if src.endswith(".jsonl") else json.load(open(src, encoding="utf-8"))
     out, skipped = [], 0
     for n, r in enumerate(rows, 1):
@@ -1077,7 +1089,7 @@ def import_findings(paths: Paths, src: str, group: str, source: str = "external"
         if ti is None or not off or not prop:
             skipped += 1          # e.g. a prose "suggestion" with no exact replacement: hand it to a human
             continue
-        sev = int(r.get("severity") or r.get("sev") or 1)
+        sev = _clamp_sev(r.get("severity") or r.get("sev"))
         cat = r.get("category") if r.get("category") in ("A", "B", "C", "D") else ("A" if sev >= 2 else "C")
         out.append({"id": f"{group}-{n:03d}", "text_index": int(ti), "category": cat,
                     "severity": sev, "offending": off, "proposed": prop,
@@ -1107,7 +1119,7 @@ def dual_merge(cache: str, files: list[str], out: str) -> dict:
         if it is None:
             continue
         rows.append({"i": ti, "en": it.source_text or "", "current": it.translated_text or "",
-                     "agree": len({x["by"] for x in iss}), "maxsev": max(int(x.get("sev") or 1) for x in iss),
+                     "agree": len({x["by"] for x in iss}), "maxsev": max(_clamp_sev(x.get("sev")) for x in iss),
                      "issues": iss})
     rows.sort(key=lambda r: (-r["agree"], -r["maxsev"], r["i"]))
     write_json(out, rows)

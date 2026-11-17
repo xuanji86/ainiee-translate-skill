@@ -129,7 +129,7 @@ def lint_locked(locked: dict) -> list[dict]:
             lead = toks[0].lower() if toks else ""
             titled = (len(toks) >= 2 and [t.lower() for t in toks[1:]] == canon_toks
                       and (lead in term_srcs or len(lead_count.get(lead, ())) >= 2))
-            if toks and ((len(toks) > 1 and toks[0].rstrip(".") in _HON_BARE) or titled):   # "Bishop" alone is a name
+            if toks and (toks[0].rstrip(".") in _HON_BARE or titled):
                 issues.append({"kind": "alias_has_title", "character": canon, "alias": n,
                                "hint": "verify demands aliases verbatim; a title that gets translated "
                                        "makes this alias false-positive on every hit"})
@@ -166,7 +166,7 @@ def _known(locked: dict) -> set[str]:
     return _glossary_known(locked)
 
 
-_NEWTERM_SEP = re.compile(r"\t|=>|->|→")
+_NEWTERM_SEP = re.compile(r"=>|->|→")
 
 
 def parse_newterm(line: str) -> tuple[str, str] | None:
@@ -174,7 +174,8 @@ def parse_newterm(line: str) -> tuple[str, str] | None:
     line = line.strip().strip(",;")
     if not line or line.startswith("#"):
         return None
-    src, dst = (_NEWTERM_SEP.split(line, 1) + [""])[:2]
+    # TAB is the format the bundle asks for: it wins, so an arrow inside the term ("Type->B rifle") stays
+    src, dst = ((line.split("\t", 1) if "\t" in line else _NEWTERM_SEP.split(line, 1)) + [""])[:2]
     src, dst = src.strip(), dst.strip() or src.strip()
     return (src, dst) if src else None
 
@@ -279,6 +280,10 @@ def main(argv=None):
         seed = glossary_seed.load_seed(a.config, a.analysis)
         write_locked(build_locked(seed), a.out)
         print(f"locked glossary -> {a.out}")
+        dropped = glossary_clean.title_only(seed.get("characters", []))
+        if dropped:
+            sys.stderr.write(f"dropped {len(dropped)} character(s) whose whole name is a title word: "
+                             f"{', '.join(dropped)}\n  (if one is a surname, add it to the glossary by hand)\n")
     elif a.cmd == "filter":
         out = filter_locked(load_locked(a.locked), _texts_from_files(a.sources))
         write_locked(out, a.out)

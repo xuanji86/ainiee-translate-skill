@@ -21,9 +21,17 @@ _HON_BARE = {h.rstrip(".") for h in _HONORIFICS}
 
 def _strip_title(source: str) -> str:
     words = normalize_apostrophes(source).split()
-    while len(words) > 1 and words[0].rstrip(".") in _HON_BARE:   # a lone "Bishop" is the name itself
+    while words and words[0].rstrip(".") in _HON_BARE:
         words = words[1:]
     return " ".join(words)
+
+
+def title_only(raw: list[dict]) -> list[str]:
+    """Seed names that are nothing but title words ("Captain", "Dr."): clean_characters drops them —
+    kept as a character, the title would be left untranslated wherever it occurs. The rare person
+    actually called Bishop has to be added by hand, so the caller lists these."""
+    out = [c.get("source", "") for c in raw if (c.get("source") or "").strip() and not _strip_title(c["source"])]
+    return list(dict.fromkeys(out))
 
 
 def _is_suffix(short: str, long_: str) -> bool:

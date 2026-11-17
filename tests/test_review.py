@@ -587,6 +587,40 @@ def test_final_rerun_does_not_pile_up_rejects(tmp_path, make_project):
     assert sorted((r["id"], r["_reject"]) for r in rows) == [("g1-001", "challenger:fine"), ("g1-003", "ambiguous(0)")]
 
 
+def test_final_rerun_keeps_a_gate_reject_that_shares_an_id(tmp_path, make_project):
+    cache, paths, rules = _group(tmp_path, make_project, [
+        _fd(1, 3, "九", "玖"),                           # fails the gate …
+        _fd(1, 1, "二", "贰")], rejected=1)              # … and a later finding reuses its id
+    review.write_jsonl(paths.f("verdicts_g1.jsonl"), [{"id": "g1-001", "verdict": "reject", "reason": "fine"}])
+    for _ in range(3):
+        review.final(paths, rules, ["g1"])
+    rows = review.read_jsonl(paths.f("rejected_g1.jsonl"))
+    assert [(r["id"], r["_reject"]) for r in rows] == [("g1-001", "ambiguous(0)"), ("g1-001", "challenger:fine")]
+
+
+def test_import_clamps_severity_to_the_gate_scale(tmp_path, make_project):
+    cache = _project_dir(tmp_path, make_project)
+    paths = review.Paths(cache)
+    src = tmp_path / "ext.jsonl"
+    review.write_jsonl(str(src), [
+        {"text_index": 1, "offending": "二", "proposed": "贰", "severity": 5},
+        {"text_index": 2, "offending": "六", "proposed": "陆", "sev": "4"},
+        {"text_index": 3, "offending": "七", "proposed": "柒", "severity": "critical"},
+        {"text_index": 1, "offending": "三", "proposed": "叁", "severity": 0.4}])
+    assert review.main(["import", cache, str(src), "--group", "x"]) == 0
+    got = review.read_jsonl(paths.f("findings_x.jsonl"))
+    assert [(f["severity"], f["category"]) for f in got] == [(3, "A"), (3, "A"), (1, "C"), (1, "C")]
+    res = review.pre(paths, review.load_rules(paths), [paths.f("findings_x.jsonl")])[0]
+    assert (res["ok"], res["rejected"]) == (4, 0)                 # the gravest findings are not the ones thrown out
+    assert review.read_jsonl(paths.f("findings_x.pre.jsonl"))[0]["severity"] == 3
+    # dual-merge ranks by the same scale and does not choke on a non-numeric sev
+    a = tmp_path / "opus_1.jsonl"
+    review.write_jsonl(str(a), [{"i": 1, "sev": 5, "issue": "x"}, {"i": 2, "sev": "high", "issue": "y"}])
+    out = tmp_path / "fix_input.json"
+    review.dual_merge(cache, [str(a)], str(out))
+    assert [(r["i"], r["maxsev"]) for r in json.load(open(out, encoding="utf-8"))] == [(1, 3), (2, 1)]
+
+
 def test_inventory_with_a_glossary_larger_than_the_regex_cache(tmp_path, make_project):
     cache = _project_dir(tmp_path, make_project)
     locked = os.path.join(os.path.dirname(cache), "glossary.locked.json")

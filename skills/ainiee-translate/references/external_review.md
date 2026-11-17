@@ -12,6 +12,7 @@
    {"text_index": 1610, "offending": "她不恨 Marlow 做的事。", "proposed": "她并不因 Marlow 的所作所为而恨他。",
     "severity": 2, "category": "A", "reason": "恨的对象是人，不是那件事"}
    ```
+   `severity` 用 1–3（3=意思错或读不通 / 2=明显别扭 / 1=可改可不改）；对方若用别的量表，`review import` 把大于 3 的截到 3、小于 1 或非数字的记 1。
    `offending` 必须是当前译文里**原样、恰好出现一次**的片段；`category` A 误译 / B 硬伤 / C 翻译腔 / D 不一致（缺省按 severity：≥2 记 A，否则 C）。
    也接受 `{i, current, fix, sev, issue}` 这种写法。
 

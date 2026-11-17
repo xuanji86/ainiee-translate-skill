@@ -125,13 +125,38 @@ def test_merge_newterms_conflicts_with_the_table_case_variants_and_arrow(tmp_pat
     assert set(terms) == {"airship", "HUD", "kestrel"} and terms["kestrel"]["keep_source"]
 
 
-def test_clean_characters_keeps_a_title_word_name_and_no_shared_surname_alias():
-    raw = [{"source": "Bishop", "gender": "M"}, {"source": "Father Korin"},
+def test_title_only_seeds_are_dropped_and_listed_shared_surname_gets_no_alias(tmp_path, capsys):
+    raw = [{"source": "Captain"}, {"source": "Father"}, {"source": "Dr."}, {"source": "Father Korin"},
            {"source": "Owen Ashby"}, {"source": "Tom Ashby"}, {"source": "Kathryn Hollis"}]
     chars = {c["canonical"]: c for c in glossary_clean.clean_characters(raw)}
-    assert set(chars) == {"Bishop", "Korin", "Owen Ashby", "Tom Ashby", "Kathryn Hollis"}
-    assert chars["Bishop"]["gender"] == "M"
+    assert set(chars) == {"Korin", "Owen Ashby", "Tom Ashby", "Kathryn Hollis"}      # a bare title is not a person
+    assert glossary_clean.title_only(raw) == ["Captain", "Father", "Dr."]
     assert chars["Owen Ashby"]["aliases"] == [] and chars["Tom Ashby"]["aliases"] == []   # neither owns "Ashby"
     assert chars["Kathryn Hollis"]["aliases"] == ["Hollis"]
-    kinds = {i["kind"] for i in glossary.lint_locked({"characters": list(chars.values()), "terms": []})}
-    assert "alias_collides" not in kinds and "alias_has_title" not in kinds
+    assert "alias_collides" not in {i["kind"] for i in glossary.lint_locked({"characters": list(chars.values()), "terms": []})}
+    # `glossary build` says what it dropped instead of losing it silently
+    cfg = tmp_path / "config.json"; cfg.write_text("{}", encoding="utf-8")
+    ana = tmp_path / "analysis.json"
+    ana.write_text(json.dumps({"extra": {"analysis_v1": {"characters": raw}}}), encoding="utf-8")
+    out = tmp_path / "g.json"
+    glossary.main(["build", "--config", str(cfg), "--analysis", str(ana), "--out", str(out)])
+    err = capsys.readouterr().err
+    assert "Captain, Father, Dr." in err and "by hand" in err
+    assert [c["canonical"] for c in json.loads(out.read_text(encoding="utf-8"))["characters"]] == [
+        "Korin", "Owen Ashby", "Tom Ashby", "Kathryn Hollis"]
+    glossary.main(["build", "--config", str(cfg), "--out", str(out)])                # nothing dropped: no notice
+    assert capsys.readouterr().err == ""
+
+
+def test_lint_still_flags_a_lone_title_word_alias():
+    locked = {"characters": [{"canonical": "James Marlow", "render": "James Marlow", "aliases": ["Captain", "Marlow"]}],
+              "terms": []}
+    hits = [i["alias"] for i in glossary.lint_locked(locked) if i["kind"] == "alias_has_title"]
+    assert hits == ["Captain"]
+
+
+def test_newterm_tab_wins_over_an_arrow_inside_the_term():
+    assert glossary.parse_newterm("Type->B rifle\tB 型步枪") == ("Type->B rifle", "B 型步枪")
+    assert glossary.parse_newterm("Highmark\t高标镇 => 旧称") == ("Highmark", "高标镇 => 旧称")
+    assert glossary.parse_newterm("Highmark => 高标镇") == ("Highmark", "高标镇")
+    assert glossary.parse_newterm("Type->B rifle") == ("Type", "B rifle")           # no TAB: the arrow separates
