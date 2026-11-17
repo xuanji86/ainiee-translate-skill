@@ -82,3 +82,56 @@ def test_glossary_cli_filter_and_lint(tmp_path, capsys):
     assert {c["canonical"] for c in got["characters"]} == {"Tom Ashby", "Owen Ashby"}
     rc = glossary.main(["lint", "--locked", str(lk)])
     assert rc == 1
+
+
+def test_filter_keeps_a_term_the_group_only_uses_in_the_plural():
+    locked = {"characters": [{"canonical": "Hale", "render": "Hale", "aliases": []}],
+              "terms": [{"src": "skimmer", "dst": "掠空兽"}, {"src": "airlock", "dst": "气闸"},
+                        {"src": "ash", "dst": "灰"}, {"src": "Korin", "dst": "科林人"}]}
+    out = glossary.filter_locked(locked, ["Two Skimmers circled the airlocks.", "Hales and Korins? Ashes fell."])
+    assert [t["src"] for t in out["terms"]] == ["skimmer", "airlock", "ash"]   # -s / -es, any case
+    assert out["characters"] == []                                             # names and capitalised terms: exact form only
+    # the same word forms verify checks, so what filter drops verify does not demand
+    from ainiee_translate import verify
+    items = [{"text_index": 1, "translation_status": 1, "source_text": "Two Skimmers circled the airlocks.",
+              "translated_text": "两只飞兽绕着舱门盘旋。"}]
+    assert {i["detail"].split(":")[0] for i in verify.check_items(items, locked)} == {"skimmer -> 掠空兽", "airlock -> 气闸"}
+
+
+def test_merge_newterms_conflicts_with_the_table_case_variants_and_arrow(tmp_path, capsys):
+    assert glossary.parse_newterm("Highmark -> 高标镇") == ("Highmark", "高标镇")
+    assert glossary.parse_newterm("Highmark → 高标镇") == ("Highmark", "高标镇")
+    locked = {"characters": [{"canonical": "Hale", "render": "Hale", "aliases": []}],
+              "terms": [{"src": "airship", "dst": "飞艇/飞船"}, {"src": "HUD", "dst": "HUD", "keep_source": True}]}
+    per_file = {"n1": [("Airship", "飞船"), ("Hale", "黑尔"), ("airship", "气艇"), ("hud", "抬头显示")],
+                "n2": [("kestrel", "kestrel"), ("Marlow", "Marlow")],
+                "n3": [("Kestrel", "Kestrel"), ("marlow", "马洛")]}
+    c = glossary.newterm_conflicts(per_file, locked)
+    assert c == {"hale": {"黑尔": ["n1"], "Hale": ["table"]},                       # the table keeps the name
+                 "airship": {"飞船": ["n1"], "气艇": ["n1"], "飞艇": ["table"]},      # 飞船 is a table alternative, 气艇 is not
+                 "hud": {"抬头显示": ["n1"], "HUD": ["table"]},
+                 "marlow": {"Marlow": ["n2"], "马洛": ["n3"]}}                       # two groups disagree
+    # kestrel / Kestrel, both kept verbatim, are one choice: no conflict, merged once
+    lk = tmp_path / "locked.json"; lk.write_text(json.dumps(locked), encoding="utf-8")
+    files = []
+    for name, pairs in per_file.items():
+        p = tmp_path / f"newterms_{name}.txt"
+        p.write_text("\n".join(f"{s} -> {d}" for s, d in pairs) + "\n", encoding="utf-8")
+        files.append(str(p))
+    glossary.main(["merge-newterms", "--locked", str(lk), *files, "--apply"])
+    out = capsys.readouterr().out
+    assert "CONFLICT airship" in out and "(table)" in out and "conflicts (not merged): 4" in out
+    terms = {t["src"]: t for t in json.loads(lk.read_text(encoding="utf-8"))["terms"]}
+    assert set(terms) == {"airship", "HUD", "kestrel"} and terms["kestrel"]["keep_source"]
+
+
+def test_clean_characters_keeps_a_title_word_name_and_no_shared_surname_alias():
+    raw = [{"source": "Bishop", "gender": "M"}, {"source": "Father Korin"},
+           {"source": "Owen Ashby"}, {"source": "Tom Ashby"}, {"source": "Kathryn Hollis"}]
+    chars = {c["canonical"]: c for c in glossary_clean.clean_characters(raw)}
+    assert set(chars) == {"Bishop", "Korin", "Owen Ashby", "Tom Ashby", "Kathryn Hollis"}
+    assert chars["Bishop"]["gender"] == "M"
+    assert chars["Owen Ashby"]["aliases"] == [] and chars["Tom Ashby"]["aliases"] == []   # neither owns "Ashby"
+    assert chars["Kathryn Hollis"]["aliases"] == ["Hollis"]
+    kinds = {i["kind"] for i in glossary.lint_locked({"characters": list(chars.values()), "terms": []})}
+    assert "alias_collides" not in kinds and "alias_has_title" not in kinds
