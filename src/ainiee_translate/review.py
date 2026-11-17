@@ -61,7 +61,7 @@ import json
 import os
 import re
 
-from . import audit, cache_io, state
+from . import audit, cache_io, state, verify
 
 LATIN = re.compile(r"[A-Za-z][A-Za-z’'\-]*")
 HAN = re.compile(r"[一-鿿]")
@@ -98,7 +98,8 @@ def write_json(p, obj):
 
 
 def group_of(path: str) -> str:
-    m = re.search(r"(?:findings|verdicts|flags)_([A-Za-z0-9]+)", os.path.basename(path))
+    # everything up to the suffix is the id, so "codex-1" / "ch11_b" are not cut at the "-" / "_"
+    m = re.match(r"(?:findings|verdicts|flags)_(.+?)(?:\.pre|\.auto)?(?:\.jsonl?)?$", os.path.basename(path))
     if not m:
         raise ValueError(f"cannot infer group id from {path!r} (expected findings_X / flags_X .jsonl)")
     return m.group(1)
@@ -134,6 +135,11 @@ class Paths:
 
 
 # --------------------------------------------------------------- rules ----
+def _hits(rx: re.Pattern, s: str) -> collections.Counter:
+    """Whole matches, counted. (`findall` would return the capture groups of a pattern that has any.)"""
+    return collections.Counter(m.group(0) for m in rx.finditer(s))
+
+
 class Rules:
     def __init__(self, cfg: dict, glossary_dst: list[str] = (), protected: dict | None = None):
         # text a meaning fix removed (provenance): a proposal must not bring it back
@@ -165,18 +171,18 @@ class Rules:
     def settled_removed(self, off: str, prop: str) -> set[str]:
         """Settled renderings in `off` that `prop` drops. Replacing one with a longer settled rendering
         that contains it (医生 -> 首席医生, 翠鸟号 -> 翠鸟号舰长) is not a removal -- but only a rendering
-        `prop` newly introduces counts, so 翠鸟号舰长 already standing in `off` cannot cover a dropped 翠鸟号."""
-        was, kept = set(self.settled_all.findall(off)), set(self.settled_all.findall(prop))
-        new = kept - was
-        return {t for t in was - kept if not any(t in k for k in new)}
+        `prop` newly introduces counts, so 翠鸟号舰长 already standing in `off` cannot cover a dropped 翠鸟号.
+        Occurrences are counted: two 翠鸟号 in `off` and one in `prop` is a removal."""
+        was, kept = _hits(self.settled_all, off), _hits(self.settled_all, prop)
+        new = [t for t in kept if kept[t] > was[t]]
+        return {t for t in was if kept[t] < was[t] and not any(t in k for k in new)}
 
     def violation(self, off: str, prop: str, waiver: bool = False, category: str = "") -> tuple[str, set[str]]:
         """-> (reason or '', glossary-only settled renderings an A finding is allowed to drop)."""
-        if self.forbid.search(prop):
+        if _hits(self.forbid, prop) - _hits(self.forbid, off):   # introduced, not merely kept from `off`
             return "forbid_char", set()
-        if collections.Counter(self.redline.findall(off)) != collections.Counter(self.redline.findall(prop)):
-            if not waiver or any(collections.Counter(rx.findall(off)) != collections.Counter(rx.findall(prop))
-                                 for rx in self.redline_hard):
+        if _hits(self.redline, off) != _hits(self.redline, prop):
+            if not waiver or any(_hits(rx, off) != _hits(rx, prop) for rx in self.redline_hard):
                 return "E_redline", set()
         gone = self.settled_removed(off, prop)
         if gone and not (category == "A" and all(self.settled_gl.fullmatch(t) and not self.settled.fullmatch(t)
@@ -206,8 +212,9 @@ def load_rules(paths: Paths, locked: str | None = None) -> Rules:
     if cfg.get("glossary_settled", True) and locked and os.path.exists(locked):
         with open(locked, encoding="utf-8") as f:
             gl = json.load(f)
-        dst = [t["dst"].strip() for t in gl.get("terms", []) if (t.get("dst") or "").strip()
-               and not t.get("keep_source")]
+        # "飞艇/飞船": each alternative is a settled rendering (the whole string never occurs in text)
+        dst = [d for t in gl.get("terms", []) if not t.get("keep_source")
+               for d in verify.split_dst(t.get("dst") or "")]
     d = state.load(paths.cache)
     cfg = dict(cfg, settled=list(cfg.get("settled", [])) + [re.escape(x) for x in state.settled_dst(d)])
     r = Rules(cfg, dst, state.protected_removals(paths.cache))
@@ -216,14 +223,29 @@ def load_rules(paths: Paths, locked: str | None = None) -> Rules:
 
 
 # ---------------------------------------------------------------- gate ----
+def _sev(x) -> int | None:
+    if isinstance(x, str) and x.strip().isdigit():
+        x = int(x)
+    return x if isinstance(x, int) and not isinstance(x, bool) and x in (1, 2, 3) else None
+
+
 def check(f: dict, seg: dict | None, rules: Rules) -> tuple[bool, str, str | None, list[str]]:
     """Gate one finding against the text it was written for. -> (ok, reason, new_text, settled_override);
-    settled_override = glossary-only settled renderings an A finding drops (the caller must challenge it)."""
+    settled_override = glossary-only settled renderings an A finding drops (the caller must challenge it).
+    Field types are checked here (bad_type / bad_severity) so later stages never meet a list where a
+    string belongs; `pre` adds the cross-row rules (duplicate_id, flags on the finding's own segment)."""
     req = ("id", "text_index", "category", "offending", "proposed")
+    if not isinstance(f, dict):
+        return False, "bad_type", None, []
     if any(k not in f or f[k] in (None, "") for k in req):
         return False, "missing_field", None, []
-    if f["category"] not in ("A", "B", "C", "D"):
+    if (not isinstance(f["id"], (str, int)) or isinstance(f["id"], bool)
+            or not all(isinstance(f[k], str) for k in ("offending", "proposed"))):
+        return False, "bad_type", None, []
+    if not isinstance(f["category"], str) or f["category"] not in ("A", "B", "C", "D"):
         return False, "bad_category", None, []
+    if f.get("severity") is not None and _sev(f["severity"]) != f["severity"]:   # absent, or the int 1/2/3
+        return False, "bad_severity", None, []
     if seg is None:
         return False, "unknown_index", None, []
     src, old = seg["source_text"], seg["translated_text"]
@@ -259,10 +281,27 @@ def _seg(segs: dict[int, dict], ti) -> dict | None:
     return segs.get(int(ti)) if isinstance(ti, int) or (isinstance(ti, str) and ti.isdigit()) else None
 
 
-def _flag_ids(paths: Paths, g: str) -> set | None:
-    """Blind Reader flag ids of group g; None when there is no flags file."""
+def _flag_segs(paths: Paths, g: str) -> dict | None:
+    """Blind Reader flags of group g: {flag id: text_index}; None when there is no flags file."""
     fp = paths.f(f"flags_{g}.jsonl")
-    return {x.get("id") for x in read_jsonl(fp)} if os.path.exists(fp) else None
+    if not os.path.exists(fp):
+        return None
+    return {x.get("id"): str(x.get("text_index")) for x in read_jsonl(fp) if isinstance(x, dict)}
+
+
+def _flag_ids(paths: Paths, g: str) -> set | None:
+    fs = _flag_segs(paths, g)
+    return None if fs is None else set(fs)
+
+
+def _own_flags(f: dict, flag_segs: dict | None) -> list:
+    """The finding's `flags` that are real Blind Reader flags on its own segment. `segs --tier/slim`
+    lets a flagged finding skip the Challenger, so a flag that does not exist, or belongs to another
+    segment, must not count."""
+    fl = f.get("flags")
+    if not isinstance(fl, list) or not flag_segs:
+        return []
+    return [x for x in fl if isinstance(x, (str, int)) and flag_segs.get(x) == str(f["text_index"])]
 
 
 def check_file(paths: Paths, rules: Rules, g: str, path: str | None = None) -> list[str]:
@@ -272,7 +311,7 @@ def check_file(paths: Paths, rules: Rules, g: str, path: str | None = None) -> l
     builder script. Writes nothing. -> error lines (empty = OK)."""
     path = path or paths.f(f"findings_{g}.jsonl")
     segs = paths.group_src(g)
-    flag_ids = _flag_ids(paths, g)
+    flag_segs = _flag_segs(paths, g)
     errs, seen, cat, sev = [], set(), collections.Counter(), collections.Counter()
     with open(path, encoding="utf-8") as fh:
         lines = fh.readlines()
@@ -283,6 +322,9 @@ def check_file(paths: Paths, rules: Rules, g: str, path: str | None = None) -> l
             f = json.loads(line)
         except ValueError as e:
             errs.append(f"L{ln}: bad JSON ({e})")
+            continue
+        if not isinstance(f, dict):
+            errs.append(f"L{ln}: not a JSON object")
             continue
         i = f.get("id") or f"L{ln}"
         miss = [k for k in ("id", "text_index", "category", "severity", "offending", "proposed", "reason")
@@ -302,8 +344,15 @@ def check_file(paths: Paths, rules: Rules, g: str, path: str | None = None) -> l
             errs.append(f"{i}: drop C severity 1 (not adopted by default)")
         if c in ("A", "C") and not f.get("source_evidence"):
             errs.append(f"{i}: source_evidence required for {c}")
-        if flag_ids is not None and set(f.get("flags") or ()) - flag_ids:
-            errs.append(f"{i}: unknown flags {sorted(set(f['flags']) - flag_ids)}")
+        fl = f.get("flags") or []
+        if not isinstance(fl, list) or not all(isinstance(x, (str, int)) for x in fl):
+            errs.append(f"{i}: flags must be a list of flag ids")
+        elif flag_segs is not None:
+            if set(fl) - set(flag_segs):
+                errs.append(f"{i}: unknown flags {sorted(set(fl) - set(flag_segs))}")
+            other = [x for x in fl if x in flag_segs and x not in _own_flags(f, flag_segs)]
+            if other:
+                errs.append(f"{i}: flags of another segment {other}")
         ok, why, _, _ = check(f, _seg(segs, f["text_index"]), rules)
         if not ok:
             errs.append(f"{i}: gate {why}")
@@ -319,11 +368,21 @@ def pre(paths: Paths, rules: Rules, files: list[str]) -> list[dict]:
     for p in files:
         g = group_of(p)
         segs = paths.group_src(g)
-        ok_rows, bad_rows, stats = [], [], collections.Counter()
+        flag_segs = _flag_segs(paths, g)
+        ok_rows, bad_rows, stats, seen = [], [], collections.Counter(), set()
         for f in read_jsonl(p):
-            ok, why, new, override = check(f, _seg(segs, f.get("text_index")), rules)
+            raw, f = f, (f if isinstance(f, dict) else {"_raw": f})
+            ok, why, new, override = check(raw, _seg(segs, f.get("text_index")), rules)
+            if ok and f["id"] in seen:   # `final` keys findings by id: a second one would silently replace the first
+                ok, why = False, "duplicate_id"
             if ok:
+                seen.add(f["id"])
                 f["_new_text"] = new
+                if f.get("flags"):
+                    own = _own_flags(f, flag_segs)
+                    if own != f["flags"]:
+                        f["_flags_dropped"], f["flags"] = f["flags"], own
+                        stats["flags_dropped"] += 1
                 if override:   # an A finding dropping a glossary-only dst: let it through, never unchallenged
                     f["_settled_override"] = override
                 if f.get("redline_waiver") or override:
@@ -475,12 +534,6 @@ def load_verdicts(paths: Paths, g: str, findings) -> tuple[dict, bool]:
     return verdicts, True
 
 
-def _sev(x) -> int | None:
-    if isinstance(x, str) and x.strip().isdigit():
-        x = int(x)
-    return x if isinstance(x, int) and not isinstance(x, bool) and x in (1, 2, 3) else None
-
-
 def resolve(f: dict, v: dict | None, segs: dict, rules: Rules) -> str:
     """Apply Challenger verdict `v` to finding `f` in place -> '' if it survives, else its reject reason.
     The single place that turns a verdict into the final proposed / category / severity: `final`,
@@ -585,7 +638,13 @@ def final(paths: Paths, rules: Rules, groups: list[str]) -> list[dict]:
         write_json(paths.f(f"apply_{g}.json"), [{k: v for k, v in r.items() if not k.startswith("_")} for r in apply_rows])
         write_json(paths.f(f"apply_{g}.meta.json"), apply_rows)
         _write_review_md(paths.f(f"review_{g}.md"), review_rows, f"待过目（{g}）—— C/D 类与需人工的 A 类")
-        append_jsonl(paths.f(f"rejected_{g}.jsonl"), rej)
+        # rejected_g.jsonl = the gate's rejects (from `pre`) + this run's; a rerun replaces the rows an
+        # earlier `final` appended (every one of them is a finding of the .pre file) instead of piling up
+        rp = paths.f(f"rejected_{g}.jsonl")
+        gate = [r for r in (read_jsonl(rp) if os.path.exists(rp) else [])
+                if not (isinstance(r.get("id"), (str, int)) and r["id"] in findings)
+                or r.get("_reject") == "duplicate_id"]
+        write_jsonl(rp, gate + rej)
         row = {"group": g, "apply_segments": len(apply_rows), "review": len(review_rows), "rejected": len(rej)}
         out.append(row)
         print(f"[{g}] apply(A/B)={row['apply_segments']} segs  review(C/D/human)={row['review']}  rejected={row['rejected']}")
@@ -916,12 +975,14 @@ def inventory(paths: Paths, lo: int, hi: int, locked: str | None, min_count: int
         lower_seen.update(w for w in _WORD.findall(_TAGS.sub("", it.source_text)) if w[0].islower())
     name_tokens = {w.lower() for n in names for w in n.split()}
     term_segs = collections.defaultdict(set)
+    # compiled once: re's own cache holds 512 patterns, so a bigger glossary recompiled every term per segment
+    gl_pat = [(t, re.compile(r"(?<![A-Za-z])" + re.escape(t.lower()) + r"(?![A-Za-z])")) for t in gl_src]
     for it in items:
         s = _TAGS.sub("", it.source_text)
         i = it.text_index
         low = s.lower()
-        for t in gl_src:
-            if re.search(r"(?<![A-Za-z])" + re.escape(t.lower()) + r"(?![A-Za-z])", low):
+        for t, pat in gl_pat:
+            if pat.search(low):
                 term_segs[t].add(i)
         words = [w.lower() for w in _WORD.findall(s)]
         for n in (2, 3):

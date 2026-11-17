@@ -9,7 +9,8 @@
                                                    e.g. bring an excluded interlude back into scope
   cache fill-dupes <cache> [--max-words 8] [--apply]
                                                    copy a translation to untranslated/excluded segments
-                                                   with the same short source (contents page ← NCX)
+                                                   with the same short source (contents page ← NCX);
+                                                   goes through the write gate like `batch write`
 """
 import argparse
 import collections
@@ -17,7 +18,7 @@ import json
 import re
 
 from . import cache_io, helpers
-from .batch import parse_range, changed_indexes
+from .batch import parse_range, changed_indexes, make_check
 from ._vendor.ModuleFolders.Service.Cache.CacheItem import TranslationStatus
 
 _TAGS = re.compile(r"</?[a-z]+>", re.I)
@@ -72,32 +73,39 @@ def main(argv=None):
     du.add_argument("--out", required=True); du.add_argument("--status", nargs="*", type=int, default=[1, 2])
     du.add_argument("--changed-since", metavar="OLD_CACHE")
     ss = sub.add_parser("set-status"); ss.add_argument("cache"); ss.add_argument("--range", required=True)
-    ss.add_argument("--from", dest="frm", type=int, required=True); ss.add_argument("--to", type=int, required=True)
+    ss.add_argument("--from", dest="frm", type=int, required=True, choices=sorted(LABEL))
+    ss.add_argument("--to", type=int, required=True, choices=sorted(LABEL))
     ss.add_argument("--apply", action="store_true")
     fd = sub.add_parser("fill-dupes"); fd.add_argument("cache"); fd.add_argument("--max-words", type=int, default=8)
     fd.add_argument("--apply", action="store_true")
     a = ap.parse_args(argv)
-    rng = parse_range(getattr(a, "range", None))
+    try:
+        rng = parse_range(getattr(a, "range", None))
+    except ValueError:
+        ap.error(f"bad --range {a.range!r} (expected A-B)")
 
-    if a.cmd in ("set-status", "fill-dupes") and a.apply:
+    if a.cmd == "set-status" and a.apply:
         with cache_io.locked(a.cache):
-            helpers.backup_file(a.cache)
             project = cache_io.load_cache(a.cache)
-            if a.cmd == "set-status":
-                n = 0
-                for it in _sel(project, rng, {a.frm}):
-                    it.translation_status = a.to
-                    n += 1
-                print(f"set {n} segment(s) {a.frm} -> {a.to}")
-            else:
-                idx = cache_io.index_items(project)
-                rows = fill_dupes(project, a.max_words)
-                for ti, _, text in rows:
-                    idx[ti].translated_text = text
-                    idx[ti].translation_status = TranslationStatus.TRANSLATED
-                print(f"filled {len(rows)} segment(s)")
-            cache_io.save_cache(project, a.cache)
+            hit = [it for it in _sel(project, rng, {a.frm}) if a.to != a.frm]
+            for it in hit:
+                it.translation_status = a.to
+            if hit:
+                helpers.backup_file(a.cache)
+                cache_io.save_cache(project, a.cache)
+        print(f"set {len(hit)} segment(s) {a.frm} -> {a.to}")
         return 0
+    if a.cmd == "fill-dupes" and a.apply:
+        # the same gate as `batch write`: a donor with <i> must not land on a source without marks
+        rows = [{"text_index": ti, "translated_text": text}
+                for ti, _, text in fill_dupes(cache_io.load_cache(a.cache), a.max_words)]
+        open_ = (TranslationStatus.UNTRANSLATED, TranslationStatus.EXCLUDED)
+        res = cache_io.apply_writeback(
+            a.cache, rows, TranslationStatus.TRANSLATED, lambda r: r["translated_text"],
+            check=make_check(cache_path=a.cache),
+            guard=lambda item, text: None if item.translation_status in open_ else "already_translated")
+        print(f"filled {res.applied} segment(s)" + (f"; rejected {len(res.rejected)}: {res.rejected[:20]}" if res.rejected else ""))
+        return 1 if res.rejected else 0
 
     project = cache_io.load_cache(a.cache)
     if a.cmd == "stats":

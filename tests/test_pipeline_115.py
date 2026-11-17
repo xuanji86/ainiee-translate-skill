@@ -145,6 +145,45 @@ def test_cache_fill_dupes_and_set_status(tmp_path, make_project):
     assert _item(p, 2).translation_status == S.UNTRANSLATED
 
 
+def test_cache_fill_dupes_goes_through_the_write_gate(tmp_path, make_project, capsys):
+    proj = make_project(sources=["<i>Kingfisher</i>", "Kingfisher", "<i>Kingfisher</i>"])
+    cache_io.set_translation(proj, 1, "<i>翠鸟号</i>")
+    p = _save(tmp_path, proj)
+    assert cache.main(["fill-dupes", p, "--apply"]) == 1          # the plain-text twin is refused
+    assert "filled 1 segment(s); rejected 1" in capsys.readouterr().out
+    assert _item(p, 2).translation_status == S.UNTRANSLATED and not _item(p, 2).translated_text
+    assert _item(p, 3).translated_text == "<i>翠鸟号</i>" and _item(p, 3).translation_status == S.TRANSLATED
+
+
+def test_cache_set_status_validates_its_arguments(tmp_path, make_project):
+    import pytest
+    p = _save(tmp_path, make_project(n=2))
+    before = open(p, "rb").read()
+    for bad in (["--range", "1-2", "--from", "0", "--to", "3"],       # no such status
+                ["--range", "1-2", "--from", "9", "--to", "0"],
+                ["--range", "one-two", "--from", "0", "--to", "7"]):
+        with pytest.raises(SystemExit) as e:
+            cache.main(["set-status", p, *bad, "--apply"])
+        assert e.value.code == 2
+    assert open(p, "rb").read() == before
+    assert cache.main(["set-status", p, "--range", "5-9", "--from", "0", "--to", "7", "--apply"]) == 0   # nothing matched
+    assert open(p, "rb").read() == before and not list(tmp_path.glob("cache.json.bak.*"))
+    assert cache.main(["set-status", p, "--range", "1-1", "--from", "0", "--to", "7", "--apply"]) == 0
+    assert _item(p, 1).translation_status == S.EXCLUDED and len(list(tmp_path.glob("cache.json.bak.*"))) == 1
+
+
+def test_settle_keeps_the_same_dst_for_another_src(tmp_path, make_project):
+    p = _save(tmp_path, make_project(n=1))
+    state.main(["settle", p, "--dst", "飞艇", "--src", "airship"])
+    state.main(["settle", p, "--dst", "飞艇", "--src", "dirigible"])
+    state.main(["settle", p, "--dst", "飞艇", "--src", "airship", "--note", "用户定"])   # same pair: replaced
+    got = [(x.get("src"), x["dst"], x.get("note")) for x in state.load(p)["settled"]]
+    assert got == [("dirigible", "飞艇", None), ("airship", "飞艇", "用户定")]
+    state.main(["settle", p, "--dst", "港口"])
+    state.main(["settle", p, "--dst", "港口", "--note", "改注"])                       # no src: one entry per dst
+    assert [x.get("note") for x in state.load(p)["settled"] if x["dst"] == "港口"] == ["改注"]
+
+
 def test_scan_pending_terms_ranks_new_clustered_words():
     items = [{"text_index": i, "translation_status": 1, "source_text": "The ship circled on.", "translated_text": "x"}
              for i in range(1, 60)]

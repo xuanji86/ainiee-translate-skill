@@ -3,8 +3,9 @@ iterate / mutate items by translation status. The CacheProject / CacheItem types
 are vendored from AiNiee under _vendor/ — no external AiNiee repo required.
 
 Write path guarantees (apply_writeback): advisory file lock (so a stray
-concurrent writer serializes instead of clobbering), timestamped backup,
-O(1) item lookup, gate checks before mutation, atomic save (tmp + os.replace)."""
+concurrent writer serializes instead of clobbering), O(1) item lookup, gate
+checks before mutation, timestamped backup + atomic save (tmp + os.replace)
+only when something actually changed."""
 import json
 import os
 import types
@@ -141,7 +142,9 @@ def patched_text(current: str, patches) -> str | None:
 
 def apply_writeback(cache_path: str, items: list[dict], status, get_text,
                     check=None, force: bool = False, guard=None) -> WriteResult:
-    """Lock → backup → load → for each item: gate → mutate → atomic save.
+    """Lock → load → for each item: gate → mutate → (if anything changed) backup → atomic save.
+    A write the gate rejected in full, or one that changes nothing, leaves the cache and its
+    backups alone — so retrying a bad file cannot rotate the real restore points away.
 
     `status` None keeps each segment's status (TRANSLATED stays, POLISHED stays; an
     untranslated/excluded one becomes TRANSLATED) — so one write path serves both.
@@ -154,9 +157,9 @@ def apply_writeback(cache_path: str, items: list[dict], status, get_text,
     such as "already translated" or "brings back a protected fix", not lint)."""
     res = WriteResult(total=len(items))
     with locked(cache_path):
-        helpers.backup_file(cache_path)
         project = load_cache(cache_path)
         idx = index_items(project)
+        dirty = False
         for it in items:
             ti = int(it["text_index"])
             item = idx.get(ti)
@@ -183,14 +186,18 @@ def apply_writeback(cache_path: str, items: list[dict], status, get_text,
                     res.warnings[c] = res.warnings.get(c, 0) + 1
             if text != (item.translated_text or ""):
                 res.changes.append({"text_index": ti, "before": item.translated_text or "", "after": text})
+            was = (item.translated_text, item.translation_status)
             item.translated_text = text
             if status is None:
                 if item.translation_status not in (TranslationStatus.TRANSLATED, TranslationStatus.POLISHED):
                     item.translation_status = TranslationStatus.TRANSLATED
             else:
                 item.translation_status = status
+            dirty = dirty or was != (item.translated_text, item.translation_status)
             res.applied += 1
-        save_cache(project, cache_path)
+        if dirty:
+            helpers.backup_file(cache_path)     # the file on disk is still the pre-write state
+            save_cache(project, cache_path)
     _log_event(cache_path, {"event": "write", "status": None if status is None else int(status),
                             "applied": res.applied, "rejected": len(res.rejected), "total": res.total})
     return res

@@ -197,6 +197,7 @@ def test_segs_tier_auto_verdicts_and_final(tmp_path, make_project):
     os.makedirs(paths.groups)
     batch.main(["split", cache, "--stage", "review", "--prefix", "g", "--target", "10",
                 "--out-dir", paths.groups, "--context", "0"])
+    review.write_jsonl(paths.f("flags_g1.jsonl"), [{"id": "g1-b1", "text_index": 1, "quote": "二"}])
     review.write_jsonl(paths.f("findings_g1.jsonl"), [
         {"id": "g1-001", "text_index": 1, "category": "B", "severity": 2, "offending": "二", "proposed": "贰", "flags": ["g1-b1"]},
         {"id": "g1-002", "text_index": 2, "category": "B", "severity": 2, "offending": "六", "proposed": "陆"},
@@ -271,12 +272,13 @@ def test_segs_slim_and_check_command(tmp_path, make_project, capsys):
     os.makedirs(paths.groups)
     batch.main(["split", cache, "--stage", "review", "--prefix", "g", "--target", "10",
                 "--out-dir", paths.groups, "--context", "0"])
-    review.write_jsonl(paths.f("flags_g1.jsonl"), [{"id": "g1-b1", "text_index": 1, "quote": "二"}])
+    review.write_jsonl(paths.f("flags_g1.jsonl"), [{"id": "g1-b1", "text_index": 1, "quote": "二"},
+                                                  {"id": "g1-b2", "text_index": 2, "quote": "六"}])
     good = [
         {"id": "g1-001", "text_index": 1, "category": "B", "severity": 2, "offending": "二", "proposed": "贰",
          "reason": "r", "flags": ["g1-b1"]},
         {"id": "g1-002", "text_index": 2, "category": "C", "severity": 2, "offending": "六", "proposed": "陆",
-         "reason": "r", "source_evidence": "six", "flags": ["g1-b1"]},
+         "reason": "r", "source_evidence": "six", "flags": ["g1-b2"]},
         {"id": "g1-003", "text_index": 3, "category": "C", "severity": 2, "offending": "七", "proposed": "柒",
          "reason": "r", "source_evidence": "seven"},
     ]
@@ -302,6 +304,11 @@ def test_segs_slim_and_check_command(tmp_path, make_project, capsys):
                 "g1-007: source_evidence required", "g1-008: unknown flags ['g1-b9']", "g1-008: gate ambiguous(0)",
                 "bad JSON"):
         assert msg in out, msg
+    # a flag that exists but sits on another segment, and a flags field that is not a list
+    review.write_jsonl(paths.f("findings_g1.jsonl"), [dict(good[0], flags=["g1-b2"]), dict(good[2], flags="g1-b1")])
+    assert review.main(["check", cache, "g1"]) == 1
+    out = capsys.readouterr().out
+    assert "g1-001: flags of another segment ['g1-b2']" in out and "g1-003: flags must be a list" in out
     # mixed-type severity must be reported, not crash the summary
     with open(paths.f("findings_g1.jsonl"), "w", encoding="utf-8") as fh:
         fh.write(json.dumps(dict(good[0], severity="2"), ensure_ascii=False) + "\n"
@@ -328,11 +335,13 @@ def test_settled_override_is_always_challenged(tmp_path, make_project, capsys):
     batch.main(["split", cache, "--stage", "review", "--prefix", "g", "--target", "10",
                 "--out-dir", paths.groups, "--context", "0"])
     rules = review.Rules({}, ["二"])            # 二 is a glossary-only settled rendering
+    review.write_jsonl(paths.f("flags_g1.jsonl"), [{"id": "g1-b1", "text_index": 1, "quote": "二"},
+                                                  {"id": "g1-b3", "text_index": 3, "quote": "七"}])
     review.write_jsonl(paths.f("findings_g1.jsonl"), [
         {"id": "g1-001", "text_index": 1, "category": "A", "severity": 2, "offending": "二", "proposed": "两",
          "flags": ["g1-b1"]},
         {"id": "g1-002", "text_index": 3, "category": "C", "severity": 2, "offending": "七", "proposed": "柒",
-         "flags": ["g1-b1"]},
+         "flags": ["g1-b3"]},
     ])
     review.pre(paths, rules, [paths.f("findings_g1.jsonl")])
     f = review.read_jsonl(paths.f("findings_g1.pre.jsonl"))[0]
@@ -350,16 +359,19 @@ def test_settled_override_is_always_challenged(tmp_path, make_project, capsys):
 
 
 # ------------------------------------------------- verdict -> write-back ----
-def _group(tmp_path, make_project, findings, rules=None):
-    """cache 1 "一 二 三" / 2 "四 <i>五</i> 六" / 3 "七" split into g1; findings through `pre`."""
+def _group(tmp_path, make_project, findings, rules=None, flags=None, rejected=0):
+    """cache 1 "一 二 三" / 2 "四 <i>五</i> 六" / 3 "七" split into g1; findings through `pre`.
+    `flags`: the Blind Reader's flags_g1.jsonl rows (a finding's `flags` only count when they are there)."""
     cache = _project_dir(tmp_path, make_project)
     paths = review.Paths(cache)
     os.makedirs(paths.groups)
     batch.main(["split", cache, "--stage", "review", "--prefix", "g", "--target", "10",
                 "--out-dir", paths.groups, "--context", "0"])
     rules = rules or review.load_rules(paths)
+    if flags:
+        review.write_jsonl(paths.f("flags_g1.jsonl"), flags)
     review.write_jsonl(paths.f("findings_g1.jsonl"), findings)
-    assert review.pre(paths, rules, [paths.f("findings_g1.jsonl")])[0]["rejected"] == 0
+    assert review.pre(paths, rules, [paths.f("findings_g1.jsonl")])[0]["rejected"] == rejected
     return cache, paths, rules
 
 
@@ -381,7 +393,8 @@ def test_final_without_verdicts_never_auto_applies(tmp_path, make_project, capsy
     cache, paths, _ = _group(tmp_path, make_project, [
         _fd(1, 1, "二", "贰", cat="A", redline_waiver="source: two"),     # forced to the Challenger
         _fd(2, 1, "三", "叁"),
-        _fd(3, 2, "六", "陆", cat="C", flags=["g1-b1"])], rules)
+        _fd(3, 2, "六", "陆", cat="C", flags=["g1-b1"])], rules,
+        flags=[{"id": "g1-b1", "text_index": 2, "quote": "六"}])
     # no challenge / verdicts file at all (segs never run): human list only, A/B included
     res = review.final(paths, rules, ["g1"])[0]
     assert (res["apply_segments"], res["review"], res["rejected"]) == (0, 3, 0)
@@ -472,3 +485,116 @@ def test_pick_out_without_json_suffix(tmp_path, make_project):
     assert review.pick(paths, rules, ["g1-001"], ["g1"], out=out) == 1
     assert json.load(open(out, encoding="utf-8")) == [{"text_index": 3, "polished_text": "柒"}]
     assert json.load(open(out + ".meta.json", encoding="utf-8"))[0]["_findings"] == ["g1-001"]
+
+
+# ------------------------------------------------- gate hardening (v1.17.2) ----
+def test_pre_drops_flags_that_are_missing_or_on_another_segment(tmp_path, make_project):
+    cache, paths, rules = _group(tmp_path, make_project, [
+        _fd(1, 1, "二", "贰", flags=["g1-b1"]),          # a real flag on its own segment
+        _fd(2, 2, "六", "陆", flags=["g1-b1"]),          # the flag belongs to segment 1
+        _fd(3, 3, "七", "柒", flags=["g1-b9"]),          # no such flag
+        _fd(4, 1, "三", "叁", flags="g1-b1")],           # not a list
+        flags=[{"id": "g1-b1", "text_index": 1, "quote": "二"}])
+    pre = {f["id"]: f for f in review.read_jsonl(paths.f("findings_g1.pre.jsonl"))}
+    assert [pre[f"g1-00{n}"]["flags"] for n in (1, 2, 3, 4)] == [["g1-b1"], [], [], []]
+    assert pre["g1-002"]["_flags_dropped"] == ["g1-b1"] and "_flags_dropped" not in pre["g1-001"]
+    # only the really corroborated finding may skip the Challenger
+    review.segs_for(paths, [paths.f("findings_g1.pre.jsonl")], tier=True, sample=0.0)
+    assert [v["id"] for v in review.read_jsonl(paths.f("verdicts_g1.auto.jsonl"))] == ["g1-001"]
+    assert [f["id"] for f in review.read_jsonl(paths.f("challenge_g1.jsonl"))] == ["g1-002", "g1-003", "g1-004"]
+
+
+def test_pre_drops_flags_when_there_is_no_flags_file(tmp_path, make_project):
+    cache, paths, rules = _group(tmp_path, make_project, [_fd(1, 1, "二", "贰", flags=["g1-b1"])])
+    assert review.read_jsonl(paths.f("findings_g1.pre.jsonl"))[0]["flags"] == []
+    review.segs_for(paths, [paths.f("findings_g1.pre.jsonl")], tier=True, sample=0.0)
+    assert not os.path.exists(paths.f("verdicts_g1.auto.jsonl"))
+
+
+def test_pre_rejects_duplicate_ids_and_bad_types(tmp_path, make_project):
+    cache, paths, rules = _group(tmp_path, make_project, [
+        _fd(1, 1, "二", "贰"),
+        _fd(1, 3, "七", "柒"),                           # the same id again
+        _fd(2, 1, "三", "叁", sev="high"),
+        _fd(3, 1, "三", "叁", sev=5),
+        _fd(4, 2, "六", ["陆"]),
+        dict(_fd(5, 2, "六", "陆"), id=["x"]),
+        "not an object"], rejected=6)
+    pre = review.read_jsonl(paths.f("findings_g1.pre.jsonl"))
+    assert [(f["id"], f["offending"]) for f in pre] == [("g1-001", "二")]
+    assert [r["_reject"] for r in review.read_jsonl(paths.f("rejected_g1.jsonl"))] == [
+        "duplicate_id", "bad_severity", "bad_severity", "bad_type", "bad_type", "bad_type"]
+    # what survived runs through the later stages without a stack trace
+    review.segs_for(paths, [paths.f("findings_g1.pre.jsonl")])
+    review.write_jsonl(paths.f("verdicts_g1.jsonl"), [{"id": "g1-001", "verdict": "accept", "reason": "ok"}])
+    assert review.final(paths, rules, ["g1"])[0]["apply_segments"] == 1
+    assert _apply(paths) == [{"text_index": 1, "polished_text": "一 贰 三"}]
+
+
+def test_glossary_dst_alternatives_are_each_settled(tmp_path, make_project):
+    cache = _project_dir(tmp_path, make_project)
+    with open(os.path.join(os.path.dirname(cache), "glossary.locked.json"), "w", encoding="utf-8") as f:
+        json.dump({"terms": [{"src": "two", "dst": "二/贰"}, {"src": "three", "dst": "三 | 叁"}]}, f, ensure_ascii=False)
+    rules = review.load_rules(review.Paths(cache))
+    seg = {"text_index": 1, "source_text": "one two three", "translated_text": "一 二 三"}
+    assert review.check(_fd(1, 1, "二", "两"), seg, rules)[1] == "E_settled_removed"
+    assert review.check(_fd(1, 1, "三", "仨"), seg, rules)[1] == "E_settled_removed"
+    assert review.check(_fd(1, 1, "一 二", "壹 二"), seg, rules)[0]
+
+
+def test_redline_whole_match_settled_counted_forbid_only_when_introduced():
+    def seg(text):
+        return {"text_index": 1, "source_text": "x", "translated_text": text}
+    # a redline with a capture group compares the whole match, not the group
+    r = _rules(redline=[r"(上|中)[校尉]"])
+    assert review.check(_fd(1, 1, "上校", "上尉"), seg("Hale 上校到了。"), r)[1] == "E_redline"
+    assert review.check(_fd(1, 1, "到了", "来了"), seg("Hale 上校到了。"), r)[0]
+    # a settled rendering used twice may not drop to once
+    r = _rules(settled=["翠鸟号"])
+    two = seg("翠鸟号起航，翠鸟号返航。")
+    assert review.check(_fd(1, 1, "翠鸟号起航，翠鸟号返航", "翠鸟号起航，随后返航"), two, r)[1] == "E_settled_removed"
+    assert review.check(_fd(1, 1, "翠鸟号起航，翠鸟号返航", "翠鸟号出港，翠鸟号返航"), two, r)[0]
+    # forbid: a character the original already had may stay; a new one may not come in
+    r = _rules()
+    quoted = seg('他说"好"，然后走了。')
+    assert review.check(_fd(1, 1, '他说"好"', '他说"行"'), quoted, r)[0]
+    assert review.check(_fd(1, 1, "然后走了", '然后"走"了'), quoted, r)[1] == "forbid_char"
+
+
+def test_group_id_keeps_hyphen_and_underscore(tmp_path, make_project):
+    assert review.group_of("/r/findings_codex-1.jsonl") == "codex-1"
+    assert review.group_of("findings_ch11_b.pre.jsonl") == "ch11_b"
+    assert review.group_of("verdicts_g1.auto.jsonl") == "g1"
+    assert review.group_of("flags_g12.jsonl") == "g12"
+    cache = _project_dir(tmp_path, make_project)
+    paths = review.Paths(cache)
+    src = tmp_path / "ext.json"
+    src.write_text(json.dumps([{"i": 1, "offending": "二", "proposed": "贰", "sev": 2}], ensure_ascii=False), encoding="utf-8")
+    assert review.main(["import", cache, str(src), "--group", "codex-1"]) == 0
+    assert review.main(["pre", cache, paths.f("findings_codex-1.jsonl")]) == 0
+    assert os.path.exists(paths.f("findings_codex-1.pre.jsonl"))
+    assert review.final(paths, review.load_rules(paths), ["codex-1"])[0]["review"] == 1   # no Challenger: human list
+
+
+def test_final_rerun_does_not_pile_up_rejects(tmp_path, make_project):
+    cache, paths, rules = _group(tmp_path, make_project, [
+        _fd(1, 1, "二", "贰"), _fd(2, 2, "六", "陆"), _fd(3, 3, "九", "玖")], rejected=1)   # g1-003 fails the gate
+    review.write_jsonl(paths.f("verdicts_g1.jsonl"), [{"id": "g1-001", "verdict": "reject", "reason": "fine"},
+                                                     {"id": "g1-002", "verdict": "accept", "reason": "ok"}])
+    for _ in range(3):
+        assert review.final(paths, rules, ["g1"])[0]["rejected"] == 1
+    rows = review.read_jsonl(paths.f("rejected_g1.jsonl"))
+    assert sorted((r["id"], r["_reject"]) for r in rows) == [("g1-001", "challenger:fine"), ("g1-003", "ambiguous(0)")]
+
+
+def test_inventory_with_a_glossary_larger_than_the_regex_cache(tmp_path, make_project):
+    cache = _project_dir(tmp_path, make_project)
+    locked = os.path.join(os.path.dirname(cache), "glossary.locked.json")
+    with open(locked, "w", encoding="utf-8") as f:
+        json.dump({"terms": [{"src": f"filler{n}", "dst": "x"} for n in range(600)]
+                            + [{"src": "four", "dst": "四"}, {"src": "ve", "dst": "x"}]}, f, ensure_ascii=False)
+    paths = review.Paths(cache)
+    os.makedirs(paths.dir)
+    inv = review.inventory(paths, 1, 3, locked, min_count=1)
+    by = {t["src"]: t["segments"] for t in inv["terms"]}
+    assert by["four"] == [2] and "ve" not in by and not any(k.startswith("filler") for k in by)   # whole words only

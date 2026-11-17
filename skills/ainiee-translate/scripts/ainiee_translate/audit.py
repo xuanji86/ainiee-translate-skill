@@ -8,7 +8,9 @@ Two tiers, shared by `batch write` (gate), `batch validate` (pre-write) and the
   each kept exactly once, or a pair closed before it opens — never waivable),
   `tag_mismatch` (<i>/<b> open/close counts differ from the source;
   pass allow_tag_mismatch for projects whose rules permit an exception, e.g.
-  translated book titles switching from <i> to 《》).
+  translated book titles switching from <i> to 《》 — or the marks are closed
+  out of order / cross each other or a ⟦n⟧…⟦/n⟧ pair, which would export as
+  broken XHTML and is never waivable).
 - soft  → style slips worth a look, tallied not blocking: identical_untranslated,
   markup_leak, and — only when the target contains CJK — halfwidth_punct,
   halfwidth_period, cjk_corner_quote, ascii_ellipsis, single_dash, inner_space,
@@ -40,12 +42,36 @@ def token_mismatch(src: str, tgt: str) -> bool:
     return any(pos[f"⟦{tok[2:]}"] > pos[tok] for tok in t if tok.startswith("⟦/"))
 
 
+_NEST = re.compile(r"<(/?)([ib])>|⟦(/?)(\d+)⟧")
+
+
+def well_nested(text: str) -> bool:
+    """<i>/<b> marks and ⟦n⟧…⟦/n⟧ pairs close in the reverse order they opened, so they turn into
+    well-formed inline tags on export. A lone ⟦n⟧ (footnote number, image) is an atom, not a pair."""
+    toks = [(m[1] or m[3], m[2] or "⟦" + m[4]) for m in _NEST.finditer(text)]
+    paired = {name for close, name in toks if close and name[0] == "⟦"}
+    stack = []
+    for close, name in toks:
+        if name[0] == "⟦" and name not in paired:
+            continue
+        if not close:
+            stack.append(name)
+        elif not stack or stack.pop() != name:
+            return False
+    return not stack
+
+
 def mark_mismatch(src: str, tgt: str) -> list[str]:
+    """Marks whose open/close counts differ from the source, plus "nesting" when the counts could
+    pass but the target closes marks out of order or lets them cross each other / a ⟦n⟧ pair
+    (`</i>翠鸟号<i>`, `⟦1⟧第<i>二⟦/1⟧</i>部`) while the source nests cleanly."""
     out = []
     for m in ("i", "b"):
         if (src.count(f"<{m}>") != tgt.count(f"<{m}>")
                 or src.count(f"</{m}>") != tgt.count(f"</{m}>")):
             out.append(m)
+    if well_nested(src) and not well_nested(tgt):
+        out.append("nesting")
     return out
 
 
@@ -55,7 +81,8 @@ def hard_checks(src: str, tgt: str, allow_tag_mismatch: bool = False) -> list[st
         return ["empty"]
     if token_mismatch(src, tgt):
         return ["token_mismatch"]
-    if not allow_tag_mismatch and mark_mismatch(src, tgt):
+    bad = mark_mismatch(src, tgt)
+    if bad and (not allow_tag_mismatch or "nesting" in bad):   # a count exception never excuses broken nesting
         return ["tag_mismatch"]
     return []
 

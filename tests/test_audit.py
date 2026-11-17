@@ -50,3 +50,20 @@ def test_hard_token_mismatch_not_waivable():
         assert audit.hard_checks(src, bad, allow_tag_mismatch=True) == ["token_mismatch"], bad
     assert audit.hard_checks("Plain.", "平文⟦1⟧。") == ["token_mismatch"]
     assert "markup_leak" not in audit.soft_checks(src, ok)
+
+
+def test_marks_closed_out_of_order_or_crossing_are_a_tag_mismatch():
+    src = "The <i>Kingfisher</i> sailed."
+    assert audit.hard_checks(src, "<i>翠鸟号</i>起航了。") == []
+    assert audit.hard_checks(src, "</i>翠鸟号<i>起航了。") == ["tag_mismatch"]          # same counts, reversed
+    assert audit.hard_checks("<i>a <b>b</b></i>", "<i>甲<b>乙</i></b>") == ["tag_mismatch"]  # crossing each other
+    assert audit.hard_checks("<i>a <b>b</b></i>", "<i>甲<b>乙</b></i>") == []
+    # crossing a ⟦n⟧…⟦/n⟧ link pair; a lone ⟦2⟧ atom may sit anywhere
+    link = "⟦1⟧Part <i>Two</i>⟦/1⟧ here⟦2⟧"
+    assert audit.hard_checks(link, "⟦1⟧第<i>二⟦/1⟧</i>部⟦2⟧") == ["tag_mismatch"]
+    assert audit.hard_checks(link, "⟦1⟧第<i>二⟦2⟧</i>部⟦/1⟧") == []
+    # a count exception (title moved from <i> to 《》) does not excuse broken nesting
+    assert audit.hard_checks(src, "《翠鸟号》起航了。", allow_tag_mismatch=True) == []
+    assert audit.hard_checks(src, "</i>翠鸟号<i>起航了。", allow_tag_mismatch=True) == ["tag_mismatch"]
+    # a source that is itself crossed (legacy parse) is only held to the count rule
+    assert audit.hard_checks("<i>a<b>b</i>c</b>", "<i>甲<b>乙</i>丙</b>") == []

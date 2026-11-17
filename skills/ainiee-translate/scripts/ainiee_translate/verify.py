@@ -137,14 +137,17 @@ def _term_patterns(locked: dict) -> list[tuple[str, list[str], re.Pattern]]:
 _CJK_END = re.compile(r"[\u3400-\u9fff]$")
 
 
+def split_dst(dst: str) -> list[str]:
+    """The alternatives of a `dst` written as "a/b" or "a|b"."""
+    return [d for d in (x.strip() for x in re.split(r"[/|]", dst or "")) if d]
+
+
 def _renderings(dst: str) -> list[str]:
     """Accepted forms of a `dst`: each "/"- or "|"-separated alternative, plus its stem when the
     term works as a modifier ("科瓦尼人" → "科瓦尼" in 科瓦尼巡洋舰, "升降机" → "升降" in 升降台)
     and the last word of a spaced rendering ("王国飞艇 翠鸟号" → "翠鸟号")."""
     out = []
-    for d in (x.strip() for x in re.split(r"[/|]", dst)):
-        if not d:
-            continue
+    for d in split_dst(dst):
         out.append(d)
         if len(d) >= 3 and _CJK_END.search(d):
             out.append(d[:-1])

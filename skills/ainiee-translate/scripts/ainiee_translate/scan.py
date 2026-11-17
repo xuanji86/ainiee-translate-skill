@@ -150,7 +150,8 @@ def find_untranslated_terms(items, locked):
         if t.get("keep_source") or not src or not dst or normalize_apostrophes(src) == normalize_apostrophes(dst):
             continue
         if re.search(r"[A-Za-z]", src):  # only English-source terms can "leak" as English
-            terms.append((src, dst))
+            # compiled once (= latin_boundary_search): re's cache holds 512 patterns, a bigger table thrashed it
+            terms.append((src, dst, re.compile(rf"(?<![A-Za-z]){re.escape(normalize_apostrophes(src))}(?![A-Za-z])")))
     hits = {}
     for it in items:
         if it.get("translation_status") not in CHECKED_STATUSES:
@@ -158,8 +159,9 @@ def find_untranslated_terms(items, locked):
         tgt = it.get("translated_text") or ""
         if not tgt.strip():
             continue
-        for src, dst in terms:
-            if latin_boundary_search(src, tgt):
+        tgt = normalize_apostrophes(tgt)
+        for src, dst, pat in terms:
+            if pat.search(tgt):
                 hits.setdefault((src, dst), []).append(it["text_index"])
     out = [{"src": s, "dst": d, "count": len(idx), "segments": idx} for (s, d), idx in hits.items()]
     out.sort(key=lambda r: (-r["count"], r["src"]))
