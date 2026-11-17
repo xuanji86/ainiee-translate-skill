@@ -16,7 +16,7 @@ parse → 构建锁定词汇表 → 逐章翻译（agent 按规则） → 写回
 - Agent IS 翻译引擎：无需调用任何外部 API；翻译质量由 agent 按规则实时应用保证。
 - **不限于中译**：支持任意源语言 → 目标语言（`{source_language}` 解析时自动检测、`{target_language}` 由用户指定）；本指南以中文为例，其他目标语言同理。
 - 进度状态驱动（`translation_status`）：中断后重跑自动从首个未译段继续，天然可恢复。
-- 每批写回前自动备份（时间戳）：`cache.json.bak.YYYYMMDD_HHMMSS`。
+- 每批写回（有实际改动时）自动备份（时间戳）：`cache.json.bak.YYYYMMDD_HHMMSS`。
 
 本技能自带管道脚本（`scripts/ainiee_translate/`），无需单独 `pip install` 本包；只需一个装了几个轻量库的 Python venv（见下）。
 
@@ -34,7 +34,7 @@ parse → 构建锁定词汇表 → 逐章翻译（agent 按规则） → 写回
 
 ### 项目状态文件（`work/` 下，所有阶段共读）
 
-- **`decisions.json`**（`state` 命令维护）：`settled` 已定口径（审校闸门视为定稿、不许删）、`errata` 原文笔误、`tag_exceptions` 段级标记数例外（写回/验收/audit 都认）、`lint` 本书规则（正则命中即警告，如「巨龙…他们」）。`state card --range A-B` 出一张紧凑规则卡，`batch bundle` 和 `review rules` 自动带上。
+- **`decisions.json`**（`state` 命令维护）：`settled` 已定口径（审校闸门视为定稿、不许删；同一 `--dst` 配不同 `--src` 各存一条）、`errata` 原文笔误、`tag_exceptions` 段级标记数例外（写回/验收/audit 都认）、`lint` 本书规则（正则命中即警告，如「巨龙…他们」）。`state card --range A-B` 出一张紧凑规则卡，`batch bundle` 和 `review rules` 自动带上。
 - **`provenance.jsonl`**：`batch apply --source codex|dual|editor|user|adversarial` 记录每段改了什么、为什么；意义修正删掉的说法，之后的审核提议若要改回去，闸门以 `E_reverts_fix` 拒收。
 - **`export.json`**：成品书名、语言、**固定的 `dc:identifier`**（首次导出生成，之后不变，阅读器里覆盖原条目而不是新增一本）、交付路径。
 
@@ -125,9 +125,9 @@ mkdir -p "$WORK/work" "$WORK/out"
 ```
 
 按每个文件的第一段判断：章号（数字 / 罗马数字 / One / Chapter…）、Part/Book/Act、Prologue/Epilogue/Interlude、Historian's Note → 保留；
-≤6 词的全大写或「月份 年份」分部/日期标题 → 保留（它们是正文结构）；**两份目录（ncx 与书内 Contents 页）都保留**（译完用 `cache fill-dupes --apply` 把章节标题抄过去，不必再译一遍）；
+≤6 词的全大写或「月份 年份」分部/日期标题 → 保留（它们是正文结构）；**两份目录（ncx 与书内 Contents 页）都保留**（译完用 `cache fill-dupes --apply` 把章节标题抄过去，不必再译一遍；它走写回闸门，标记对不上的段会列出来拒收，那几段手工处理）；
 最近一个保留的正文文件之后、≥200 词的散文文件按「正文续篇」保留（防止以「NORTH WATCH CAMP, DAY 47」这类电头开头的间章正文被误排除）；以「For …」开头的文件不足 200 词才当献词；紧跟「Part One」的短文件是分部副标题：标题保留，其后整段斜体的题记排除；其余排除。
-要把某段范围拉回翻译（本书例外要译题记等）：`cache set-status work/cache.json --range 38-50 --from 7 --to 0 --apply`。
+要把某段范围拉回翻译（本书例外要译题记等）：`cache set-status work/cache.json --range 38-50 --from 7 --to 0 --apply`（`--from/--to` 只接受 0/1/2/7）。
 预览里判错的用 `--keep <id>` / `--drop <id>` 纠正；已 `--apply` 过的书再 `--apply --keep <id>`，该文件已排除、无译文的段恢复成未译。
 单个 txt（没有文件结构）和以非拉丁文字为主的源文，`scope` 只打印一句说明、不做任何标记——目前只适用英文源文。三本实测书的非正文只占 1–1.7% 字数——省的主要是 agent 的注意力和一批无谓的审核，不是大钱。
 
@@ -306,8 +306,8 @@ v1.4.1 及更早版本的 epub 解析用 `soup.get_text(strip=True)` 抽文本�
   "$WORK/work/translations_batch_001.json"
 ```
 
-- 写回前自动创建带时间戳的备份 `cache.json.bak.YYYYMMDD_HHMMSS`（默认只保留最近 10 个，`AINIEE_BACKUP_KEEP` 可调，0 = 不清理；手工备份如 `cache.json.pre_xxx` 不受影响）；写入是原子的（临时文件 + rename），并持有 `cache.json.lock` 文件锁。
-- **写回闸门**：空译文、`⟦n⟧` 链接占位符没有各留一次、`<i>`/`<b>` 数量与源文不符、未知 `text_index` 一律拒收并逐条列出，其余照写；退出码 1 表示有拒收。项目规则允许标记数变化（如中译书名从 `<i>` 改《》）时加 `--allow-tag-mismatch`；`--force` 只放行这类 lint 拒收。同时统计风格警告（半角标点、「」、长度比异常等，见 `audit`）。
+- 有实际改动的写回先创建带时间戳的备份 `cache.json.bak.YYYYMMDD_HHMMSS`（全部被闸门拒收、或内容与状态都没变的写入不备份，所以反复重试一个坏文件不会把有效还原点轮转掉；默认只保留最近 10 个，`AINIEE_BACKUP_KEEP` 可调，0 = 不清理；手工备份如 `cache.json.pre_xxx` 不受影响）；写入是原子的（临时文件 + rename），并持有 `cache.json.lock` 文件锁。
+- **写回闸门**：空译文、`⟦n⟧` 链接占位符没有各留一次、`<i>`/`<b>` 数量与源文不符、标记反序或交叉嵌套（`</i>…<i>`、`<i>…<b>…</i>…</b>`、与 `⟦n⟧…⟦/n⟧` 交叉——都报 `tag_mismatch`）、未知 `text_index` 一律拒收并逐条列出，其余照写；退出码 1 表示有拒收。项目规则允许标记数变化（如中译书名从 `<i>` 改《》）时加 `--allow-tag-mismatch`（只放行数量，嵌套错乱照拒）；`--force` 只放行这类 lint 拒收。同时统计风格警告（半角标点、「」、长度比异常等，见 `audit`）。
 - **只写未译段**：段已是已译 / 已润色 / 已排除时拒收（`already_translated` / `already_polished` / `excluded`），防止旧的 `trans_N.jsonl` 把润色、修正过的译文盖回初译。改已有译文用 `batch apply`；确要整段重译加 `--overwrite`。`--force` 不放行这一条。
 - **不改回受保护修正**：新文本带回 `dual`/`codex`/`user`/`editor` 修正删掉的说法时拒收 `reverts_fix`（`polish write`、不带受保护来源的 `batch apply` 同样），`--force` 不放行；确要改回用 `batch apply --source user`。
 - 可以一次给多个文件，也接受 **JSONL**（每行一个 `{"text_index","translated_text"}`）：`batch write cache.json t1.json t2.jsonl …`——一次备份、一次加载、一次保存。
@@ -326,7 +326,7 @@ v1.4.1 及更早版本的 epub 解析用 `soup.get_text(strip=True)` 抽文本�
 <PFX> -m ainiee_translate.batch bundle "$WORK/work/cache.json" "$WORK/work/par"/grp_*_src.json --include "$WORK/work/user_prompt.md"   # 每组一个 bundle_N.md：交付约定 + 规则卡 + 本组词汇表 TSV + 前文 + 原文
 #   … subagent 读一次 bundle_N.md，一次 Write 写出 trans_N.jsonl + newterms_N.txt（`原文<TAB>译法`）…
 <PFX> -m ainiee_translate.batch validate "$WORK/work/par/grp_1_src.json" "$WORK/work/par/trans_1.jsonl" --cache "$WORK/work/cache.json"   # 索引齐全/无空译/标记成对（认 decisions.json 的例外）；不过只重派那一组
-<PFX> -m ainiee_translate.glossary merge-newterms --locked "$WORK/work/glossary.locked.json" "$WORK/work/par"/newterms_*.txt   # 预览：各组自定译法；同一原文两组译法不同 → CONFLICT，写回前统一
+<PFX> -m ainiee_translate.glossary merge-newterms --locked "$WORK/work/glossary.locked.json" "$WORK/work/par"/newterms_*.txt   # 预览：各组自定译法；同一原文两组译法不同、或与表内已有译法不同 → CONFLICT，写回前统一
 <PFX> -m ainiee_translate.batch write "$WORK/work/cache.json" "$WORK/work/par"/trans_*.jsonl                 # 一次写回全部
 <PFX> -m ainiee_translate.glossary merge-newterms --locked "$WORK/work/glossary.locked.json" "$WORK/work/par"/newterms_*.txt --apply
 ```
@@ -427,7 +427,7 @@ verify 是**词汇表执行器**，不是**发现器**。它只能发现「锁�
 <PFX> -m ainiee_translate.glossary lint --locked "$WORK/work/glossary.locked.json"         # alias 带头衔（verify 假阳性源）、两人共用同一 alias、同姓角色、重复/缺译名的术语
 ```
 
-`audit` 与 `batch write` 闸门用同一套检查，所以正常写入的项目 `empty`/`tag_mismatch` 应为 0；警告类按段号抽查。
+`audit` 与 `batch write` 闸门用同一套检查，所以正常写入的项目 `empty`/`tag_mismatch` 应为 0（`tag_mismatch` 含标记反序 / 交叉嵌套，老数据里可能查出来）；警告类按段号抽查。
 `glossary lint` 的 `alias_has_title`（如 `Admiral Hollis`）会让 verify 在头衔被翻译的每一处都误报，`alias_collides`（`Ashby` 同时挂在 Owen Ashby 与 Tom Ashby 下）说明清洗时把两个人并了——改表再 verify。
 
 **推荐校对闭环**：`verify`（清掉表内硬伤）→ `audit`（机械硬伤与风格）→ `glossary lint`（表结构）→ `scan --mode all`（`discover`→`inconsistent` 全改、`never_preserved` 挑真名；`terms`→补回被漏成英文的术语；`strays`→揪幻觉错名；`merges`→收粘连词）→ **把确认的真名/地名补进 `glossary.locked.json` 的 `characters`，保留英文的通名补进 `terms`（`keep_source:true`），有中文译名的术语进 `terms`（带 `dst`）** → 再 `verify`（这下表全了，能守住；忽略代词省略类误报）。改已有译文一律用 `batch apply`（保住状态、记来源）。
@@ -469,7 +469,7 @@ Consistency auditor；主控只跑机械闸门：`review pre`（`offending` 恰�
 
 **第二轮及以后加 `--run <名>`**（如 `--run ch11-end`）：本轮文件进 `review/<名>/`，`config.json`/`EXAMPLES.md` 仍用根目录共享的，不会与上一轮的 g1… 撞名。
 **外部审校**（Codex、人工）：`review import cache.json their.jsonl --group x --source codex` 把对方的 `{text_index, offending|current, proposed|fix, severity, reason}`
-转成 findings，走同一个 `pre` 闸门（offending 必须在**当前**译文里恰好一次，所以对方读的是旧快照也不会误写）。交接格式见 `references/external_review.md`。
+转成 findings，走同一个 `pre` 闸门（offending 必须在**当前**译文里恰好一次，所以对方读的是旧快照也不会误写）。组名可带 `-`/`_`（`--group codex-1`）。交接格式见 `references/external_review.md`。
 **意义审（双模型）**：`cache dump --range A-B --out seg.json` 给两个不同模型族的审校 → 各自 `opus_X.jsonl` / `fable_X.jsonl`（`{i, cat, sev, issue, fix}`）
 → `review dual-merge cache.json opus_*.jsonl fable_*.jsonl --out fix_input.json`（两家都报的段排前）→ 编辑 agent 输出 `{text_index, patches:[[旧,新]…], reason}`
 → `batch apply … --source dual`。模板 `references/review_workflow.js`。
@@ -608,7 +608,7 @@ A: verify 只执行**锁定表里登记过的**人名，且无法识别张冠李
 <PFX> -m ainiee_translate.progress work/cache.json --serve 8765 --open   # 本地网页看板：任何浏览器、Claude Code Desktop 都能开，2 秒轮询
 ```
 
-每组状态：`running`（jsonl 在长）→ `ready`（条数够且无空译/标记问题，可 `batch write`）或 `needs_fix`；jsonl 超过 `--stall` 秒（默认 180）没动就标 `stalled`；写回后变 `written`。面板底部给速率、剩余段的 ETA、卡死与可写回的组。**润色阶段**（`split --stage polish` 产生的 `par/_stage.json`）：顶部多一条润色进度条，组文件识别 `polished_N.jsonl`，`written` 指全部已置 POLISHED。
+每组状态：`running`（jsonl 在长）→ `ready`（条数够且无空译/标记问题，可 `batch write`）或 `needs_fix`；jsonl 超过 `--stall` 秒（默认 180）没动就标 `stalled`；写回后变 `written`。面板底部给速率、剩余段的 ETA、卡死与可写回的组。**润色阶段**（`split --stage polish` 产生的 `par/_stage.json`）：顶部多一条润色进度条，组文件**只**认 `polished_N.jsonl`（翻译阶段留下的 `trans_N.jsonl` 不算），`written` 指全部已置 POLISHED。面板只列 `_stage.json` 记的本轮分组，上一轮切剩的 `grp_*_src.json` 不显示；`--prefix` 的组名（`g1`…）照常识别。
 
 **Claude Code Desktop / 手机**（无终端分屏时）两条路：
 1. `--serve`：本地 stdlib 服务，浏览器打开 `http://127.0.0.1:8765/`，与 `--watch` 同一份快照、真实时；Desktop 里点链接即可。

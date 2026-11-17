@@ -42,8 +42,9 @@
 2. **bundle 派发**：`batch bundle cache.json par/grp_*_src.json --include work/user_prompt.md` 给每组写一个 `bundle_N.md`
    （交付约定 + `state card` 规则卡 + 本组词汇表 TSV + 前文 + 原文 JSON lines）。agent 的 prompt 只需一句「读 bundle_N.md 并照做」：
    **读一次、Write 一次、不回读不自校**——每多一次工具调用就把整段上下文再发一遍，这是 agent token 的大头。
-3. **新词带译法**：`newterms_N.txt` 每行 `原文<TAB>译法`（保留原文写 `原文<TAB>原文`）。`glossary merge-newterms`（不带 --apply）
-   先预览：同一原文两组译法不同 → `CONFLICT`，**写回前**在 trans 文件里统一，再 `--apply`。
+3. **新词带译法**：`newterms_N.txt` 每行 `原文<TAB>译法`（保留原文写 `原文<TAB>原文`；`原文 => 译法` / `原文 -> 译法` 也认）。`glossary merge-newterms`（不带 --apply）
+   先预览：同一原文两组译法不同、或某组译法与表内已有译法不同（表里保留原文的人名被音译也算）→ `CONFLICT`，**写回前**在 trans 文件里统一，再 `--apply`。
+   都保留原文、只是大小写不同（`kestrel` / `Kestrel`）不算冲突。
 4. **验收认例外**：`batch validate … --cache work/cache.json` 读 `decisions.json`（段级标记例外、本书 lint 规则）。
 5. **记账**：每个 agent 收工 `review log --stage translate --model <模型> --tokens <总 token> --segments <段数>`；`review ledger` 汇总。
 

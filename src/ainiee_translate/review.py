@@ -10,6 +10,8 @@ main agent runs between them so that no finding reaches cache.json un-gated:
   hints      validate the Blind Reader's flags_X.jsonl -> hints_X.json (flagged segments + source)
              for the Reviewer; bad quotes -> rejected_flags_X.jsonl
   pre        mechanical gate on Reviewer findings -> findings_X.pre.jsonl / rejected_X.jsonl
+             (also: duplicate ids rejected; `flags` kept only when they are this group's Blind Reader
+             flags on the finding's own segment)
   check      read-only lint of a Reviewer's findings_X.jsonl (brief rules + this gate); exit 1 on errors
   segs       the findings a Challenger must judge -> challenge_X.jsonl + their segments -> segs_X.json;
              --mode slim: every A/B challenged, flagged C/D auto-accepted (verdicts_X.auto.jsonl);
@@ -18,7 +20,8 @@ main agent runs between them so that no finding reaches cache.json un-gated:
              the whole EXAMPLES.md)
   stats      per-stage yield -> stats.md (is each stage / tier worth its tokens?)
   final      merge Challenger verdicts -> apply_X.json (A/B, ready for `polish write`)
-             + review_X.md (C/D and human-only A) + rejected_X.jsonl
+             + review_X.md (C/D and human-only A) + rejected_X.jsonl (the gate's rejects plus this
+             run's; a rerun replaces its own rows)
   merge      every group's leftover C/D into one review_ALL.md sorted by severity
   score      recall / precision against benchmark.json (benchmark groups only)
   log        append a provenance row (stage, model, agent, file[, tokens, segments]) to review_log.jsonl
@@ -39,14 +42,15 @@ verdicts_X.jsonl from Challengers, config.json with the project's rules:
                             # rendering containing it, 医生 -> 首席医生, counts as kept)
    "glossary_settled": true,# also treat every glossary `dst` as settled (default); an A finding may
                             # drop a glossary-only dst (always challenged)
-   "forbid": "[「」\\"]",    # characters proposed text must never introduce
+   "forbid": "[「」\\"]",    # characters proposed text must not add (ones already in offending may stay)
    "soft_block": [...],     # audit soft kinds that must not newly appear
    "term_only": [[a, b]…],  # benchmark: edits that are only these swaps don't count
    "norm": [[regex, repl]…],# benchmark: extra symmetric normalisation
    "leak_files": [md…]}     # score: files whose table cells are known "answers"
 
-Gate rules (per finding, in order): required fields; category in A-D;
-`offending` occurs exactly once in the reviewed text; redline/settled/forbid;
+Gate rules (per finding, in order): required fields and their types; category in A-D;
+severity absent or the int 1/2/3; `offending` occurs exactly once in the reviewed text;
+redline/settled/forbid (whole matches, counted);
 `<i>/<b>` parity via audit.lint_pair; no new soft_block issue; Latin-token
 multiset unchanged unless `latin_change` on an A finding (-> human review);
 a sentence-scale rewrite (offending >= REWRITE_MIN Han chars) must keep its Han

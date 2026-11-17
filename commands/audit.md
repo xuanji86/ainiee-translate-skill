@@ -10,6 +10,6 @@ PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" \
 "${AINIEE_PY:?}" -m ainiee_translate.audit work/cache.json --out work/audit.json $ARGUMENTS
 ```
 
-读法：`empty` / `tag_mismatch` 是硬伤（写回闸门本会拒收，出现即说明是老数据或 `--force` 写的），必修；
+读法：`empty` / `tag_mismatch`（标记数量不符，或反序 / 交叉嵌套）/ `token_mismatch` 是硬伤（写回闸门本会拒收，出现即说明是老数据或 `--force` 写的），必修；
 其余是风格警告（`halfwidth_punct`、`cjk_corner_quote`、`ascii_ellipsis`、`inner_space`、`identical_untranslated`、
 `too_short`/`too_long`），按 `work/audit.json` 里的段号抽查后用 `batch apply`（按段保住状态）修正。本书规则（如代词/量词）用 `state lint-rule` 加进 `decisions.json`，命中记为 `rule:<名>` 警告；故意的标记数差异用 `state tag-exception` 登记。
