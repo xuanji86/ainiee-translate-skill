@@ -5,9 +5,10 @@
                  (what a parallel subagent needs to read: ~10% of the table, not 66 KB)
   lint           structural problems that cause verify false positives / merged people
   merge-newterms fold the newterms_N.txt files parallel agents emit into the table;
-                 a line is `src` (kept verbatim) or `src<TAB>dst` / `src => dst` (the rendering
-                 the group chose). Groups that rendered one src differently are a CONFLICT:
-                 listed, not merged — settle them before writing the groups back.
+                 a line is `src` (kept verbatim) or `src<TAB>dst` / `src => dst` / `src -> dst`
+                 (the rendering the group chose). A src that two groups rendered differently, or
+                 that a group rendered differently from the table, is a CONFLICT: listed, not
+                 merged — settle it before writing the groups back.
 """
 import argparse
 import json
@@ -18,6 +19,7 @@ import sys
 from . import glossary_seed, glossary_clean
 from .glossary_clean import _HON_BARE
 from .helpers import normalize_apostrophes, backup_file
+from .verify import split_dst
 
 
 # ---------------------------------------------------------------- build ----
@@ -55,9 +57,12 @@ def load_locked(path: str) -> dict:
 
 
 # --------------------------------------------------------------- filter ----
-def _present(term: str, corpus_lower: str) -> bool:
+def _present(term: str, corpus_lower: str, plural: bool = False) -> bool:
+    """`plural`: also as a plural -s/-es — the word forms verify's term check accepts, so a term the
+    group only uses in the plural still reaches the agent (and is not a term_missing afterwards)."""
     t = normalize_apostrophes(term or "").lower().strip()
-    return bool(t) and re.search(rf"(?<![a-z]){re.escape(t)}(?![a-z])", corpus_lower) is not None
+    return bool(t) and re.search(rf"(?<![a-z]){re.escape(t)}{'(?:e?s)?' if plural else ''}(?![a-z])",
+                                 corpus_lower) is not None
 
 
 def filter_locked(locked: dict, texts: list[str]) -> dict:
@@ -67,7 +72,8 @@ def filter_locked(locked: dict, texts: list[str]) -> dict:
     chars = [c for c in locked.get("characters", [])
              if any(_present(n, corpus)
                     for n in [c.get("canonical"), c.get("render")] + list(c.get("aliases") or []) if n)]
-    terms = [t for t in locked.get("terms", []) if _present(t.get("src", ""), corpus)]
+    terms = [t for t in locked.get("terms", [])   # a lower-case (common-noun) src matches its plural, as in verify
+             if _present(t.get("src", ""), corpus, plural=(t.get("src") or "") == (t.get("src") or "").lower())]
     return {
         "characters": chars,
         "terms": terms,
@@ -123,7 +129,7 @@ def lint_locked(locked: dict) -> list[dict]:
             lead = toks[0].lower() if toks else ""
             titled = (len(toks) >= 2 and [t.lower() for t in toks[1:]] == canon_toks
                       and (lead in term_srcs or len(lead_count.get(lead, ())) >= 2))
-            if toks and (toks[0].rstrip(".") in _HON_BARE or titled):
+            if toks and ((len(toks) > 1 and toks[0].rstrip(".") in _HON_BARE) or titled):   # "Bishop" alone is a name
                 issues.append({"kind": "alias_has_title", "character": canon, "alias": n,
                                "hint": "verify demands aliases verbatim; a title that gets translated "
                                        "makes this alias false-positive on every hit"})
@@ -160,28 +166,62 @@ def _known(locked: dict) -> set[str]:
     return _glossary_known(locked)
 
 
+_NEWTERM_SEP = re.compile(r"\t|=>|->|→")
+
+
 def parse_newterm(line: str) -> tuple[str, str] | None:
-    """`src`, `src<TAB>dst` or `src => dst` -> (src, dst); dst == src means kept verbatim."""
+    """`src`, `src<TAB>dst`, `src => dst` or `src -> dst` -> (src, dst); dst == src means kept verbatim."""
     line = line.strip().strip(",;")
     if not line or line.startswith("#"):
         return None
-    if "\t" in line:
-        src, dst = line.split("\t", 1)
-    elif "=>" in line:
-        src, dst = line.split("=>", 1)
-    else:
-        src, dst = line, line
+    src, dst = (_NEWTERM_SEP.split(line, 1) + [""])[:2]
     src, dst = src.strip(), dst.strip() or src.strip()
     return (src, dst) if src else None
 
 
-def newterm_conflicts(per_file: dict[str, list[tuple[str, str]]]) -> dict[str, dict[str, list[str]]]:
-    """src -> {dst: [files…]} for every src that two groups rendered differently."""
-    seen: dict[str, dict[str, list[str]]] = {}
+def _src_key(src: str) -> str:
+    return normalize_apostrophes(src).lower().strip()
+
+
+def _rendering_key(src: str, dst: str) -> str:
+    """'' = kept verbatim, whatever its case ("airship" and "Airship" are the same choice)."""
+    d = normalize_apostrophes(dst).strip()
+    return "" if d.lower() == _src_key(src) else d
+
+
+def _table_renderings(locked: dict) -> dict[str, dict[str, str]]:
+    """src key -> {rendering key: as the table writes it}: a name/alias is kept verbatim, a term has
+    its `dst` (each "a/b" alternative) or is kept verbatim (keep_source / no dst)."""
+    out: dict[str, dict[str, str]] = {}
+    for c in locked.get("characters", []) or []:
+        for n in [c.get("canonical"), c.get("render")] + list(c.get("aliases") or []):
+            if n:
+                out.setdefault(_src_key(n), {})[""] = n
+    for t in locked.get("terms", []) or []:
+        src = t.get("src") or ""
+        if src:
+            alts = split_dst(t.get("dst") or "") if not t.get("keep_source") else []
+            for d in alts or [src]:
+                out.setdefault(_src_key(src), {})[_rendering_key(src, d)] = d
+    return out
+
+
+def newterm_conflicts(per_file: dict[str, list[tuple[str, str]]],
+                      locked: dict | None = None) -> dict[str, dict[str, list[str]]]:
+    """src -> {dst: [files…]} for every src that two groups rendered differently, or — with `locked` —
+    that a group rendered differently from the table (its rendering is listed under "table")."""
+    seen: dict[str, dict[str, tuple[str, list[str]]]] = {}
     for f, pairs in per_file.items():
         for src, dst in pairs:
-            seen.setdefault(normalize_apostrophes(src).lower(), {}).setdefault(dst, []).append(f)
-    return {k: v for k, v in seen.items() if len(v) > 1}
+            seen.setdefault(_src_key(src), {}).setdefault(_rendering_key(src, dst), (dst, []))[1].append(f)
+    table = _table_renderings(locked or {})
+    out = {}
+    for k, v in seen.items():
+        have = table.get(k)
+        if (len(v) > 1) if have is None else any(rk not in have for rk in v):
+            out[k] = {d: fs for d, fs in v.values()}
+            out[k].update({d: ["table"] for rk, d in (have or {}).items() if rk not in v})
+    return out
 
 
 def merge_newterms(locked: dict, names: list, category: str = "new") -> tuple[list[str], list[str]]:
@@ -256,7 +296,7 @@ def main(argv=None):
         for p in a.files:
             with open(p, encoding="utf-8") as fh:
                 per_file[p] = [x for x in (parse_newterm(l) for l in fh.read().splitlines()) if x]
-        conflicts = newterm_conflicts(per_file)
+        conflicts = newterm_conflicts(per_file, locked)
         for k, v in conflicts.items():
             print(f"CONFLICT {k}: " + "; ".join(f"{d} ({', '.join(os.path.basename(f) for f in fs)})"
                                                for d, fs in v.items()))

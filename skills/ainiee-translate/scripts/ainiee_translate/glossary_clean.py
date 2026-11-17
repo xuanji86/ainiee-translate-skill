@@ -21,7 +21,7 @@ _HON_BARE = {h.rstrip(".") for h in _HONORIFICS}
 
 def _strip_title(source: str) -> str:
     words = normalize_apostrophes(source).split()
-    while words and words[0].rstrip(".") in _HON_BARE:
+    while len(words) > 1 and words[0].rstrip(".") in _HON_BARE:   # a lone "Bishop" is the name itself
         words = words[1:]
     return " ".join(words)
 
@@ -56,11 +56,12 @@ def clean_characters(raw: list[dict]) -> list[dict]:
                 ambiguous[n] = parents
 
     out = []
+    surnames = [c.split()[-1] for c in canonicals if len(c.split()) > 1]
     for c in sorted(canonicals, key=lambda s: forms[s]["order"]):
         aliases = {a for a, p in canonical_of.items() if p == c and a != c}
         toks = c.split()
-        # Surname alias, only when no other character claims that surname.
-        if len(toks) > 1 and toks[-1] not in canonical_of:
+        # Surname alias, only when no other character claims or shares that surname.
+        if len(toks) > 1 and toks[-1] not in canonical_of and surnames.count(toks[-1]) == 1:
             aliases.add(toks[-1])
         members = [c] + sorted(aliases & set(forms))
         gender = next((forms[m]["gender"] for m in members if forms[m]["gender"]), "")

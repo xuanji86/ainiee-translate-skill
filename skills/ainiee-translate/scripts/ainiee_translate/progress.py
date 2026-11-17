@@ -2,9 +2,11 @@
 
 What is observable on disk while agents run (v1.6+ contract):
   work/cache.json            book-level status counts; changes only on `batch write`
-  work/par/grp_N_src.json    what each parallel group was handed
+  work/par/grp_N_src.json    what each parallel group was handed (N = a number, or `--prefix` + number: g1)
   work/par/trans_N.jsonl     grows as the agent appends (every 10-50 segments)
-  work/par/polished_N.jsonl  same, for a parallel polish pass (par/_stage.json says which stage)
+  work/par/polished_N.jsonl  same, for a parallel polish pass. par/_stage.json (written by `batch split`)
+                             says which stage this is and which groups belong to it: a polish pass reads
+                             only polished_N, and src files left over from an earlier split are not listed
   work/par/newterms_N.txt    new proper nouns the agent kept verbatim
   work/progress.jsonl        write-back events appended by apply_writeback
 
@@ -62,12 +64,31 @@ def _read_rows_tolerant(path: str) -> tuple[list[dict], int]:
             rows = data.get("items", data) if isinstance(data, dict) else data
         except json.JSONDecodeError:
             bad = 1
-    return [r for r in rows if isinstance(r, dict) and "text_index" in r], bad
+    good = []
+    for r in rows:
+        if isinstance(r, dict) and "text_index" in r:
+            if _int(r["text_index"]) is None:       # "text_index": "12a" / null — a bad line, not a crash
+                bad += 1
+            else:
+                good.append(r)
+    return good, bad
 
 
-def _group_number(path: str) -> int:
-    m = re.search(r"grp_(\d+)_src\.json$", path)
-    return int(m.group(1)) if m else 0
+def _int(x) -> int | None:
+    try:
+        return int(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def _group_id(path: str) -> str:
+    """grp_3_src.json -> "3"; grp_g12_src.json (split --prefix g) -> "g12"."""
+    m = re.search(r"grp_(.+)_src\.json$", os.path.basename(path))
+    return m.group(1) if m else ""
+
+
+def _group_order(path: str) -> list:
+    return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", _group_id(path))]   # g2 before g10
 
 
 def snapshot(cache_path: str, par_dir: str | None = None, stall_sec: int = STALL_SEC) -> dict:
@@ -77,11 +98,14 @@ def snapshot(cache_path: str, par_dir: str | None = None, stall_sec: int = STALL
     proj = cache_io.load_cache(cache_path)
     items = list(cache_io.iter_items(proj))
     by_idx = {it.text_index: it for it in items}
-    stage = "translate"
+    stage, current = "translate", None
     try:
         with open(os.path.join(par_dir, "_stage.json"), encoding="utf-8") as f:
-            stage = json.load(f).get("stage", "translate")
-    except (OSError, json.JSONDecodeError):
+            st = json.load(f)
+        stage = st.get("stage", "translate")
+        if isinstance(st.get("groups"), int):        # this split's groups; older src files are leftovers
+            current = {f"{st.get('prefix') or ''}{n}" for n in range(1, st["groups"] + 1)}
+    except (OSError, json.JSONDecodeError, AttributeError):
         pass
     passed = ((lambda st: st == TranslationStatus.POLISHED) if stage == "polish"
               else (lambda st: st != TranslationStatus.UNTRANSLATED))
@@ -104,24 +128,27 @@ def snapshot(cache_path: str, par_dir: str | None = None, stall_sec: int = STALL
     counts["polished_pct"] = round(100.0 * counts["polished"] / workable, 1) if workable else 100.0
 
     groups = []
-    for src_path in sorted(glob.glob(os.path.join(par_dir, "grp_*_src.json")), key=_group_number):
-        n = _group_number(src_path)
+    for src_path in sorted(glob.glob(os.path.join(par_dir, "grp_*_src.json")), key=_group_order):
+        n = _group_id(src_path)
+        if current is not None and n not in current:
+            continue
         try:
             with open(src_path, encoding="utf-8") as f:
                 src_rows = json.load(f)
-        except (OSError, json.JSONDecodeError):
+            src_idx = [int(r["text_index"]) for r in src_rows]
+        except (OSError, ValueError, TypeError, KeyError):
             continue
-        src_idx = [int(r["text_index"]) for r in src_rows]
         chapters = []
         for i in src_idx:
             k = (by_idx[i].extra or {}).get("item_id") if i in by_idx else None
             if k and (not chapters or chapters[-1] != k):
                 chapters.append(str(k))
-        names = (f"polished_{n}.jsonl", f"polished_{n}.json", f"trans_{n}.jsonl", f"trans_{n}.json")
-        if stage != "polish":
-            names = names[2:] + names[:2]
+        # this stage's output only: in a polish pass the trans_N file of the translation pass is
+        # complete and would show a group nobody has started as "ready"
+        out = "polished" if stage == "polish" else "trans"
+        names = (f"{out}_{n}.jsonl", f"{out}_{n}.json")
         trans_path = next((p for p in (os.path.join(par_dir, nm) for nm in names) if os.path.exists(p)), None)
-        g = {"group": n, "src": len(src_idx), "first_index": src_idx[0] if src_idx else None,
+        g = {"group": int(n) if n.isdigit() else n, "src": len(src_idx), "first_index": src_idx[0] if src_idx else None,
              "last_index": src_idx[-1] if src_idx else None, "chapters": chapters,
              "lines": 0, "bad_lines": 0, "age_sec": None, "seg_hard": 0, "dups": 0, "extra": 0,
              "warnings": {}, "newterms": 0, "trans_file": trans_path}

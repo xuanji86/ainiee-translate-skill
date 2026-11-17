@@ -129,3 +129,71 @@ def test_statuspane_row_written_atomically(tmp_path, monkeypatch):
     item = json.loads((out / "ainiee-translate.json").read_text(encoding="utf-8"))
     assert item == {"label": "📖 Demo Book", "percent": snap["total"]["done_pct"], "text": "20/60 · 3.1/min", "ttl": 300}
     assert [p.name for p in out.iterdir()] == ["ainiee-translate.json"]  # no tmp file left behind
+
+
+def test_polish_stage_ignores_translate_output_and_leftover_groups(tmp_path):
+    work = _work(tmp_path)                                    # translate pass: trans_1 complete, trans_2 partial
+    cache = str(work / "cache.json")
+    par = work / "par"
+    batch.main(["write", cache, str(par / "trans_1.jsonl")])  # 1-40 translated
+    # the polish pass re-splits into one group; grp_2_src.json / trans_*.jsonl are left from before
+    batch.main(["split", cache, "--stage", "polish", "--target", "100", "--out-dir", str(par), "--context", "0"])
+    snap = progress.snapshot(cache)
+    assert snap["stage"] == "polish"
+    assert [(g["group"], g["src"], g["state"]) for g in snap["groups"]] == [(1, 40, "pending")]   # not "ready", no ghost grp 2
+    (par / "polished_1.jsonl").write_text(
+        "".join(json.dumps({"text_index": i, "polished_text": f"润{i}"}) + "\n" for i in range(1, 41)), encoding="utf-8")
+    assert progress.snapshot(cache)["groups"][0]["state"] == "ready"
+
+
+def test_prefixed_groups_and_non_integer_text_index(tmp_path):
+    work = _work(tmp_path)
+    cache = str(work / "cache.json")
+    par = work / "par"
+    for f in par.glob("*"):
+        f.unlink()
+    batch.main(["split", cache, "--prefix", "g", "--target", "20", "--out-dir", str(par), "--context", "0"])
+    assert sorted(p.name for p in par.glob("grp_*_src.json")) == ["grp_g1_src.json", "grp_g2_src.json"]
+    (par / "trans_g1.jsonl").write_text(
+        "".join(json.dumps({"text_index": i, "translated_text": f"译{i}"}) + "\n" for i in range(21, 41)), encoding="utf-8")
+    (par / "trans_g2.jsonl").write_text(
+        json.dumps({"text_index": 41, "translated_text": "译41"}) + "\n"
+        + json.dumps({"text_index": "4x2", "translated_text": "译"}) + "\n"
+        + json.dumps({"text_index": None, "translated_text": "译"}) + "\n", encoding="utf-8")
+    snap = progress.snapshot(cache)                           # used to raise ValueError on "4x2"
+    g1, g2 = snap["groups"]
+    assert (g1["group"], g1["state"], g1["lines"]) == ("g1", "ready", 20)
+    assert (g2["group"], g2["state"], g2["lines"], g2["bad_lines"]) == ("g2", "running", 1, 2)
+    assert "✓g1" in progress.one_line(snap) and "▶g2 1/20" in progress.one_line(snap)
+    from rich.console import Console
+    out = Console(record=True, width=120); out.print(progress.render(snap))
+    assert "g2" in out.export_text()
+    # natural order: g2 before g10
+    assert sorted(["grp_g10_src.json", "grp_g2_src.json", "grp_g1_src.json"], key=progress._group_order) == [
+        "grp_g1_src.json", "grp_g2_src.json", "grp_g10_src.json"]
+
+
+def test_page_escapes_names_that_come_from_the_book():
+    page = open(os.path.join(os.path.dirname(progress.__file__), "progress_page.html"), encoding="utf-8").read()
+    assert 'esc((g.chapters||[]).join(" ")' in page and "${esc(g.group)}" in page
+    assert "${(g.chapters||[]).join" not in page and "<td>${g.group}</td>" not in page
+    import shutil, subprocess
+    if not shutil.which("node"):
+        return
+    # run the page's own render() on a snapshot whose chapter / group names carry markup
+    harness = r"""
+const html = require("fs").readFileSync(process.argv[1], "utf8");
+const js = html.match(/<script>([\s\S]*)<\/script>/)[1].replace("tick();setInterval(tick,2000);", "");
+const els = {};
+global.document = { getElementById: id => (els[id] = els[id] || {}) };
+eval(js + "\nglobal.render = render;");
+render({ project: "P", stage: "translate", ts: 1, work: "/w", stall_sec: 180, events: [],
+  total: { done: 1, workable: 2, done_pct: 50, untranslated: 1, polished: 0, polished_pct: 0, translated: 1 },
+  groups: [{ group: "g<b>1", chapters: ['<img src=x onerror="alert(1)">'], first_index: 1, last_index: 2, lines: 1, src: 2,
+             pct: 50, state: "stalled", age_sec: 5, seg_hard: 0, dups: 0, extra: 0, warnings: {}, newterms: 0, bad_lines: 0 }] });
+console.log(els.rows.innerHTML + els.foot.innerHTML);
+"""
+    out = subprocess.run(["node", "-e", harness, os.path.join(os.path.dirname(progress.__file__), "progress_page.html")],
+                         capture_output=True, text=True, check=True).stdout
+    assert "<img" not in out and "g<b>1" not in out
+    assert "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in out and "g&lt;b&gt;1" in out

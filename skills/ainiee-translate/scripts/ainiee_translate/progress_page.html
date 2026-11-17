@@ -20,6 +20,7 @@ td.bar-cell{width:26%}td .bar{margin:0}.st{font-weight:600}.running{color:var(--
 <script>
 const ICON={running:"▶",stalled:"⏸",ready:"✓",needs_fix:"✗",pending:"·",written:"■"};
 const age=s=>s==null?"—":s<90?s+"s":Math.floor(s/60)+"m";
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));  // chapter / group names come from the book and file names
 let prev=null;
 function render(d){
   const t=d.total, pol=d.stage==="polish"||t.polished>0;
@@ -30,16 +31,16 @@ function render(d){
   document.getElementById("totals").innerHTML=h;
   document.getElementById("rows").innerHTML=d.groups.length?d.groups.map(g=>{
     const lines=Math.min(g.lines,g.src), warn=Object.values(g.warnings||{}).reduce((a,b)=>a+b,0), hard=g.seg_hard+g.dups+g.extra;
-    return `<tr><td>${g.group}</td><td>${(g.chapters||[]).join(" ")||g.first_index+"–"+g.last_index}</td><td class="bar-cell"><div class="bar g"><i style="width:${g.pct}%"></i></div></td><td>${lines}/${g.src}${g.bad_lines?" +"+g.bad_lines+"?":""}</td><td class="st ${g.state}">${ICON[g.state]} ${g.state}</td><td>${age(g.age_sec)}</td><td class="${hard?'warn':''}">${hard}</td><td>${warn}</td><td>${g.newterms||""}</td></tr>`;
+    return `<tr><td>${esc(g.group)}</td><td>${esc((g.chapters||[]).join(" ")||g.first_index+"–"+g.last_index)}</td><td class="bar-cell"><div class="bar g"><i style="width:${g.pct}%"></i></div></td><td>${lines}/${g.src}${g.bad_lines?" +"+g.bad_lines+"?":""}</td><td class="st ${esc(g.state)}">${ICON[g.state]||""} ${esc(g.state)}</td><td>${age(g.age_sec)}</td><td class="${hard?'warn':''}">${hard}</td><td>${warn}</td><td>${g.newterms||""}</td></tr>`;
   }).join(""):`<tr><td colspan="9" class="pending">no parallel groups — serial mode</td></tr>`;
   const inflight=d.groups.filter(g=>g.state!=="written").reduce((a,g)=>a+Math.min(g.lines,g.src),0);
   const remaining=d.groups.filter(g=>g.state!=="written").reduce((a,g)=>a+g.src-Math.min(g.lines,g.src),0);
   let rate=null; if(prev&&d.ts>prev.ts){rate=Math.max(0,(inflight-prev.lines)/((d.ts-prev.ts)/60));} prev={ts:d.ts,lines:inflight};
   const stalled=d.groups.filter(g=>g.state==="stalled").map(g=>g.group), ready=d.groups.filter(g=>g.state==="ready").map(g=>g.group);
   let f=[]; if(rate!=null&&rate>0){f.push(`<b>${rate.toFixed(1)}</b> 段/分`); if(remaining) f.push(`ETA ~${Math.round(remaining/rate)} 分（剩 ${remaining} 段）`);} else if(remaining) f.push(`剩 ${remaining} 段在译`);
-  if(stalled.length) f.push(`<span class="warn">卡住：grp ${stalled.join(", ")}（>${d.stall_sec}s 没动）</span>`); if(ready.length) f.push(`<b class="ready">可写回：grp ${ready.join(", ")}</b>`);
+  if(stalled.length) f.push(`<span class="warn">卡住：grp ${esc(stalled.join(", "))}（>${esc(d.stall_sec)}s 没动）</span>`); if(ready.length) f.push(`<b class="ready">可写回：grp ${esc(ready.join(", "))}</b>`);
   document.getElementById("foot").innerHTML=f.join(" &nbsp;·&nbsp; ");
-  document.getElementById("events").innerHTML=(d.events||[]).slice(-5).reverse().map(e=>`${new Date(e.ts*1000).toLocaleTimeString()} 写回 applied ${e.applied}${e.rejected?", rejected "+e.rejected:""}${e.status===2?"（润色）":""}`).join("<br>")||"尚无写回记录";
+  document.getElementById("events").innerHTML=(d.events||[]).slice(-5).reverse().map(e=>`${new Date(e.ts*1000).toLocaleTimeString()} 写回 applied ${esc(e.applied)}${e.rejected?", rejected "+esc(e.rejected):""}${e.status===2?"（润色）":""}`).join("<br>")||"尚无写回记录";
 }
 async function tick(){try{const r=await fetch("/snapshot.json",{cache:"no-store"});render(await r.json());}catch(e){document.getElementById("sub").textContent="连接中断："+e;}}
 tick();setInterval(tick,2000);
