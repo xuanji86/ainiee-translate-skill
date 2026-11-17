@@ -8,7 +8,8 @@
                            --prefix g) for an adversarial review pass (see review.py)
   validate                 check one group's output against its source BEFORE writing
   write                    gate + write one or many translation files (JSON or JSONL)
-                           in a single lock/backup/load/save
+                           in a single lock/backup/load/save; only UNTRANSLATED segments
+                           (--overwrite to re-translate finished ones)
   apply                    the one write path for fixes: rows with translated_text / polished_text
                            / patches [[old, new]…]; keeps each segment's status (no downgrade);
                            --source records provenance (and protects meaning fixes from later passes)
@@ -93,19 +94,48 @@ def make_check(allow_tag_mismatch: bool = False, cache_path: str | None = None):
     return check
 
 
+_NOT_FRESH = {TranslationStatus.TRANSLATED: "already_translated", TranslationStatus.POLISHED: "already_polished",
+              TranslationStatus.EXCLUDED: "excluded"}
+
+
+def make_guard(cache_path: str | None, *, fresh_only: bool = False, reverts: bool = True):
+    """State checks that `--force` does not bypass. fresh_only: the segment must still be
+    UNTRANSLATED (a new-translation write never lands on finished work). reverts: the new text
+    must not bring back a snippet a protected fix (state.PROTECTED_SOURCES) removed — the same
+    rule as review's E_reverts_fix."""
+    prot = state.protected_removals(cache_path) if reverts else {}
+    fresh = set()       # untranslated when this write began (--force duplicates: the last row still wins)
+
+    def guard(item, text):
+        if fresh_only:
+            if item.translation_status != TranslationStatus.UNTRANSLATED and item.text_index not in fresh:
+                return _NOT_FRESH.get(item.translation_status, "already_translated")
+            fresh.add(item.text_index)
+        cur = item.translated_text or ""
+        if any(x in text and x not in cur for x in prot.get(item.text_index, ())):
+            return "reverts_fix"
+        return None
+    return guard
+
+
 def write_back(cache_path: str, translations: list[dict], *, force: bool = False,
-               allow_tag_mismatch: bool = False) -> cache_io.WriteResult:
+               allow_tag_mismatch: bool = False, overwrite: bool = False) -> cache_io.WriteResult:
+    """New translations: only UNTRANSLATED segments, unless `overwrite` (re-translate on purpose)."""
     return cache_io.apply_writeback(cache_path, translations, TranslationStatus.TRANSLATED,
                                     lambda t: t.get("translated_text", ""),
-                                    check=make_check(allow_tag_mismatch, cache_path), force=force)
+                                    check=make_check(allow_tag_mismatch, cache_path), force=force,
+                                    guard=make_guard(cache_path, fresh_only=not overwrite))
 
 
 def apply_rows(cache_path: str, rows: list[dict], *, source: str | None = None, reason: str | None = None,
                force: bool = False, allow_tag_mismatch: bool = False) -> cache_io.WriteResult:
     """Unified fix write: text from translated_text / polished_text / patches, status kept.
-    A row may carry its own `reason`; `source` (e.g. dual, codex, adversarial, user) goes to provenance."""
+    A row may carry its own `reason`; `source` (e.g. dual, codex, adversarial, user) goes to provenance.
+    A protected source may undo an earlier protected fix (someone changed their mind); any other
+    write may not bring its removed wording back."""
     res = cache_io.apply_writeback(cache_path, rows, None, row_text,
-                                   check=make_check(allow_tag_mismatch, cache_path), force=force)
+                                   check=make_check(allow_tag_mismatch, cache_path), force=force,
+                                   guard=make_guard(cache_path, reverts=not state.is_protected(source)))
     if source:
         why = {int(r["text_index"]): r.get("reason") or reason for r in rows}
         state.record(cache_path, [{**c, "source": source, "reason": why.get(c["text_index"])} for c in res.changes])
@@ -121,6 +151,14 @@ def report_write(res: cache_io.WriteResult, verb: str = "applied") -> None:
     if res.warnings:
         print("  warnings: " + ", ".join(f"{k}={v}" for k, v in
                                        sorted(res.warnings.items(), key=lambda kv: -kv[1])))
+    reasons = Counter(r["reason"] for r in res.rejected)
+    done = sum(reasons[k] for k in _NOT_FRESH.values())
+    if done:
+        print(f"  hint: {done} segment(s) are not untranslated — fixes go through `batch apply` "
+              "(keeps status); to re-translate them on purpose use `batch write --overwrite`")
+    if reasons["reverts_fix"]:
+        print(f"  hint: {reasons['reverts_fix']} segment(s) would bring back wording a protected fix "
+              "(dual/codex/user/editor) removed — to undo that fix on purpose: `batch apply --source user`")
 
 
 def duplicates(rows: list[dict]) -> list[int]:
@@ -412,6 +450,9 @@ def main(argv=None):
                    help="write despite hard lint failures / duplicate indexes (last wins)")
     w.add_argument("--allow-tag-mismatch", action="store_true",
                    help="do not reject segments whose <i>/<b> counts differ from the source")
+    w.add_argument("--overwrite", action="store_true",
+                   help="also write segments that are already translated / polished / excluded "
+                        "(default: rejected; fixes belong in `batch apply`)")
 
     ay = sub.add_parser("apply", help="Write fixes (translated_text / polished_text / patches), keeping each status")
     ay.add_argument("cache_path")
@@ -488,7 +529,8 @@ def main(argv=None):
         dups = duplicates(rows)
         if dups and not a.force:
             ap.error(f"duplicate text_index across inputs: {dups[:20]} (use --force to let the last one win)")
-        res = write_back(a.cache_path, rows, force=a.force, allow_tag_mismatch=a.allow_tag_mismatch)
+        res = write_back(a.cache_path, rows, force=a.force, allow_tag_mismatch=a.allow_tag_mismatch,
+                         overwrite=a.overwrite)
         report_write(res)
         return 1 if res.rejected else 0
     return 0

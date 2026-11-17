@@ -1,7 +1,8 @@
 """Write a polish pass back to the cache: overwrite translated_text with the
 polished text and mark items POLISHED (status 2), mirroring AiNiee's
 PolisherTask. Read the batch to polish with `batch read-translated`.
-Same gate/lock/backup/atomic-save path as `batch write`; accepts many files."""
+Same gate/lock/backup/atomic-save path as `batch write`; accepts many files. Rows that would
+bring back wording a protected fix removed are rejected (`reverts_fix`), even with --force."""
 import argparse
 import json
 from . import cache_io, batch
@@ -13,7 +14,8 @@ def write_polished(cache_path: str, polished: list[dict], *, force: bool = False
     return cache_io.apply_writeback(
         cache_path, polished, TranslationStatus.POLISHED,
         lambda p: p.get("polished_text", p.get("translated_text", "")),
-        check=batch.make_check(allow_tag_mismatch, cache_path), force=force)
+        check=batch.make_check(allow_tag_mismatch, cache_path), force=force,
+        guard=batch.make_guard(cache_path))
 
 
 def main(argv=None):

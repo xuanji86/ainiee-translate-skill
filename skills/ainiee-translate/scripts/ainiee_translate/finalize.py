@@ -1,12 +1,14 @@
 """Turn an exported epub into the deliverable: target-language metadata, a FIXED identifier
 (re-exports update the copy already in a reader such as Books instead of adding a new book),
-XML / link / anchor checks, every translated paragraph present, mimetype stored first.
+XML / link / anchor checks, every translated paragraph present, nothing left untranslated
+(unless allow_partial), mimetype stored first.
 
 Settings live in work/export.json (written on first use, so the identifier never changes):
   {"title": "示例书名", "language": "zh-CN",
    "identifier": "<uuid, generated once>", "description": "<p>…</p>",
    "name": "示例书名", "deliver": "/path/to/delivery/示例书名.epub"}
 """
+import html
 import json
 import os
 import posixpath
@@ -19,9 +21,11 @@ from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 from lxml import etree as E
 
 from . import cache_io
+from ._vendor.ModuleFolders.Domain.FileReader.EpubReader import TOKEN_RE
 
 NS = {"o": "http://www.idpf.org/2007/opf", "d": "http://purl.org/dc/elements/1.1/"}
 _TAG = re.compile(r"<[^>]+>")
+_MARK = re.compile(r"</?[ib]>")
 
 
 def config_path(cache_path: str) -> str:
@@ -112,20 +116,45 @@ def _check(data: dict) -> tuple[list[str], list[str]]:
     return errs, warns
 
 
-def finalize(epub_in: str, epub_out: str, cache_path: str, cfg: dict) -> dict:
+def page_text(it) -> str:
+    """The text EpubWriter puts on the page for a translated segment: leading whitespace is the
+    writer's (it lstrips the translation), <i>/<b> marks become tags, a ⟦n⟧ atom (footnote number,
+    image) becomes its archived element — whose own text (the "1" of <a><sup>1</sup></a>) is on the
+    page too — and a ⟦n⟧…⟦/n⟧ pair only wraps text. An unknown token stays as literal text."""
+    toks = (it.extra or {}).get("epub_tokens") or {}
+
+    def token(m):
+        k = m.group().strip("⟦⟧")
+        if k not in toks:
+            return m.group()
+        if k.startswith("/") or "/" + k in toks:
+            return ""
+        return html.unescape(_TAG.sub("", toks[k]))
+    return TOKEN_RE.sub(token, _MARK.sub("", (it.translated_text or "").lstrip())).strip()
+
+
+def finalize(epub_in: str, epub_out: str, cache_path: str, cfg: dict, allow_partial: bool = False) -> dict:
     with ZipFile(epub_in) as z:
         data = {n: z.read(n) for n in z.namelist()}
     _metadata(data, cfg)
     errs, warns = _check(data)
-    body = "\n".join("".join(E.fromstring(b).itertext()) for n, b in data.items() if n.endswith((".xhtml", ".html")))
-    missing, checked = [], 0
-    for it in cache_io.iter_items(cache_io.load_cache(cache_path)):
-        if int(it.translation_status) in (1, 2) and (it.extra or {}).get("item_id") != "ncx":
-            checked += 1
-            if _TAG.sub("", it.translated_text or "") not in body:
-                missing.append(it.text_index)
-    if missing:
-        errs.append(f"{len(missing)} translated paragraph(s) not found in the epub: {missing[:20]}")
+    xml_ok = not errs
+    proj = cache_io.load_cache(cache_path)
+    pending = [it.text_index for it in cache_io.iter_untranslated(proj)]
+    if pending and not allow_partial:
+        errs.append(f"{len(pending)} segment(s) still untranslated (export anyway: --allow-partial): {pending[:20]}")
+    checked = 0
+    if xml_ok:                      # the paragraph check reads every page; a broken one is already reported
+        body = "\n".join("".join(E.fromstring(b).itertext()) for n, b in data.items()
+                         if n.endswith((".xhtml", ".html")))
+        missing = []
+        for it in cache_io.iter_items(proj):
+            if int(it.translation_status) in (1, 2) and (it.extra or {}).get("tag_type") != "ncx_text":
+                checked += 1
+                if page_text(it) not in body:
+                    missing.append(it.text_index)
+        if missing:
+            errs.append(f"{len(missing)} translated paragraph(s) not found in the epub: {missing[:20]}")
     if errs:
         raise SystemExit("finalize failed:\n  " + "\n  ".join(errs[:30]))
     os.makedirs(os.path.dirname(os.path.abspath(epub_out)), exist_ok=True)

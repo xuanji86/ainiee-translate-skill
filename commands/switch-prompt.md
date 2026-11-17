@@ -6,11 +6,11 @@ allowed-tools: Bash
 切换激活模块。给了名字 `$1` 就直接加载；否则先列出再问用户选哪个。
 
 ```bash
-PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" PY="${AINIEE_PY:-python3}"
+PY="${AINIEE_PY:-python3}"; PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts"
 if [ -n "$1" ]; then
-  $PY -m ainiee_translate.module load "$1" --work "${PWD}"
+  PYTHONPATH="$PYTHONPATH" $PY -m ainiee_translate.module load "$1" --work "${PWD}"
 else
-  $PY -m ainiee_translate.module list
+  PYTHONPATH="$PYTHONPATH" $PY -m ainiee_translate.module list
 fi
 ```
 

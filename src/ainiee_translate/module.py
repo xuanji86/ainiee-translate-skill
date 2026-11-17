@@ -6,12 +6,14 @@ overridable via $AINIEE_TRANSLATE_HOME) containing module.json + translate_promp
 
 `load` copies a module's files into a project's work/ dir under the names the
 rest of the pipeline already consumes (glossary.locked.json, user_prompt.md,
-polish_prompt.md), so the existing linear workflow is unchanged.
+polish_prompt.md), so the existing linear workflow is unchanged. An empty module file (blank
+prompt, glossary with no entries) never replaces a non-empty project file.
 """
 import argparse
 import json
 import os
 import shutil
+import sys
 import time
 
 from . import helpers
@@ -61,7 +63,7 @@ def list_modules() -> list[dict]:
             out.append({"name": name, "title": mj.get("title", name),
                         "source_language": mj.get("source_language", ""),
                         "target_language": mj.get("target_language", ""),
-                        "has_polish": os.path.exists(os.path.join(root, name, POLISH_PROMPT)),
+                        "has_polish": not _blank(os.path.join(root, name, POLISH_PROMPT)),
                         "active": name == active})
     return out
 
@@ -110,10 +112,39 @@ def write_module_json(d: str, name: str, *, source_language="", target_language=
         json.dump(mj, f, ensure_ascii=False, indent=2)
 
 
+_GLOSSARY_KEYS = {"characters": ("render", "name"), "terms": ("src",), "non_translate": ("marker",)}
+
+
+def _blank(path: str) -> bool:
+    """Missing, whitespace-only, or (a glossary) all three lists empty."""
+    if not os.path.exists(path):
+        return True
+    if path.endswith(".json"):
+        d = _read_json(path, {}) or {}
+        return not any(d.get(k) for k in _GLOSSARY_KEYS)
+    with open(path, encoding="utf-8") as f:
+        return not f.read().strip()
+
+
+def _entries(path: str) -> set:
+    d = _read_json(path, {}) or {}
+    return {(k, next((e.get(f) for f in fs if e.get(f)), None) or json.dumps(e, sort_keys=True))
+            for k, fs in _GLOSSARY_KEYS.items() for e in d.get(k) or [] if isinstance(e, dict)}
+
+
 def _copy_in(src: str, dst: str) -> bool:
     if not os.path.exists(src):
         return False
+    if _blank(src) and not _blank(dst):
+        print(f"kept project's {os.path.basename(dst)}: the module's {os.path.basename(src)} is empty",
+              file=sys.stderr)
+        return False
     if os.path.exists(dst):
+        if dst.endswith(".json"):
+            lost = len(_entries(dst) - _entries(src))
+            if lost:
+                print(f"warning: the project's {os.path.basename(dst)} has {lost} entr{'y' if lost == 1 else 'ies'} "
+                      "the module's does not; replaced anyway (backup kept)", file=sys.stderr)
         helpers.backup_file(dst)
     shutil.copy2(src, dst)
     return True

@@ -45,12 +45,12 @@ Blind Reader 是用户发现问题的方式（在阅读器里当读者读）；R
 > 3. `{PROJ}/work/POLISH_REDLINES.md` —— 用户已裁定的写法，**一个字都不许碰**
 > 4. `{PROJ}/work/STYLE_GUIDE.md` —— 格式与固定译法
 > 5. `{CTX}` —— 本组之前的几段（只读，接语境）
-> 6. `{REV}/hints_{N}.json` —— Blind Reader 标出的读着别扭的地方（带源文）。**每一条 flag 都要对照源文判断**，severity 1 的也要看——盲读看着只是「有点别扭」的地方常常是误译露的头（《抵抗》里 sev1 flag 引出过 19 条 A 类 sev2 误译）；判断后够门槛（见第 3 步）才写 finding，其余直接跳过，不必逐条说明
+> 6. `{REV}/hints_{N}.json` —— Blind Reader 标出的读着别扭的地方（带源文）。**每一条 flag 都要对照源文判断**，severity 1 的也要看——盲读看着只是「有点别扭」的地方常常是误译露的头（一本试点书里 sev1 flag 引出过 19 条 A 类 sev2 误译）；判断后够门槛（见第 3 步）才写 finding，其余直接跳过，不必逐条说明
 >
 > 第 2 步 读输入 `{SRC}`：`{"text_index","source_text","translated_text"}` 数组，{COUNT} 段。`translated_text` 是现行定稿。
 >
 > 第 3 步 逐段审，按顺序问三个问题：**A** 源文每个成分都译对了吗（颜色词、习语、比较结构、军衔、`one of`、否定范围、代词指向、反问方向）？有没有整句压缩成摘要或漏掉的成分？**B** 有没有不成词的词、缺字的成语、当名词用的动词、取错义的固定词、缺成分的句子？**C** 逐条过十二条清单。每个问题一条 finding，一段可以多条；没问题就跳过，不硬凑。
-> **门槛**：A/B 类都写；**C 类只写 severity≥2**——可改可不改的 C 类不要写（默认不采用：《抵抗》g1–g4 的 472 条里 137 条是 C/D sev1，全是白写）。**不写 D 类**：跨段术语一致性交给全书 Consistency auditor。
+> **门槛**：A/B 类都写；**C 类只写 severity≥2**——可改可不改的 C 类不要写（默认不采用：一本试点书 g1–g4 的 472 条里 137 条是 C/D sev1，全是白写）。**不写 D 类**：跨段术语一致性交给全书 Consistency auditor。
 >
 > 第 4 步 finding 格式（硬约束），JSONL 一行一条：
 > `{"id":"{N}-001","text_index":452,"category":"B","severity":2,"offending":"当即拍了主意","source_evidence":"made a snap decision","proposed":"当机立断","reason":"「拍主意」不成词","confidence":0.9}`
@@ -85,10 +85,12 @@ Blind Reader 是用户发现问题的方式（在阅读器里当读者读）；R
 > - 先读 `{REV}/EXAMPLES.md`：与病例同方向的改法不得以「偏好」否决
 > - 否决理由写「读起来通」时，要写出你是作为中文读者读的哪一句
 >
-> 都过不了才 `accept`。问题是真的但改法不好 → `amend` 并写 `amended`（同样子串级约束）。另核对 `category`（把 C 报成 A 是虚高）和 `severity`；归类/严重度错但问题是真的 → `accept` 并在 `reason` 里写「降为 C」「severity 2 改为 1」，主控会按你的改。
+> 都过不了才 `accept`。问题是真的但改法不好 → `amend` 并写 `amended`（同样子串级约束）。另核对 `category`（把 C 报成 A 是虚高）和 `severity`；归类/严重度错但问题是真的 → `accept` 并加字段 `"category":"C"` / `"severity":1`（理由写在 `reason`），主控按字段改；**只在 reason 里写「降为 C」不能把类别往 A/B 升**，升类必须用字段。
 >
 > 第 3 步 产出 JSONL 到 `{OUT}`（builder `{REV}/build_verdicts_{N}.py`，`ensure_ascii=False`），**每条 finding 有且只有一条 verdict**：
-> `{"id":"{N}-001","verdict":"accept","reason":"…"}` / `{"id":…,"verdict":"reject","reason":"原译「沉甸甸」已准确，对方只是同义替换"}` / `{"id":…,"verdict":"amend","amended":"…","reason":"问题是真的，但对方改法丢了源文的 still"}`
+> `{"id":"{N}-001","verdict":"accept","reason":"…"}` / `{"id":…,"verdict":"reject","reason":"原译「沉甸甸」已准确，对方只是同义替换"}` / `{"id":…,"verdict":"amend","amended":"…","reason":"问题是真的，但对方改法丢了源文的 still"}` / `{"id":…,"verdict":"accept","category":"C","severity":1,"reason":"是翻译腔不是误译"}`
+> - `verdict` 只能是 `accept` / `reject` / `amend` 三个英文词之一（写 `rejected`、`否决` 等会被当作坏 verdict 作废，该条不写回）；`amend` 必须带非空 `amended`
+> - `category`（A–D）/ `severity`（1–3）只在要改时写，取值非法该条作废
 >
 > 约束：**绝不**修改 `cache.json`、glossary、findings 文件；**绝不**运行 `ainiee_translate` 命令。
 >
@@ -111,7 +113,7 @@ Blind Reader 是用户发现问题的方式（在阅读器里当读者读）；R
 ## 主控派发要点
 
 - **滚动派发，不分批**：同时保持 5 个左右 Opus 在跑，**完成一个补一个**；某组 Reviewer 一落地就对它 `review pre` + `review segs --mode slim`
-  并派该组 Challenger，不等同波其他组。《抵抗》实测按波次分批时约 25% 的时间在等最慢的那个。Consistency 在全部 Reviewer 落地后发。
+  并派该组 Challenger，不等同波其他组。试点书实测按波次分批时约 25% 的时间在等最慢的那个。Consistency 在全部 Reviewer 落地后发。
   前 3–5 组落地后跑 `review stats` 看各格否决率。
 - 每个 agent 落地后立刻 `review log --stage reviewer|challenger|consistency --group --model --agent --file`，别事后补。
 - Consistency 的示例**不要给方向**（「impulse 三处两译」可以，「应统一为脉冲动力」不行）——auditor 会照抄。

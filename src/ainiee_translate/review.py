@@ -146,7 +146,7 @@ class Rules:
         # is always sent to the Challenger and never auto-accepted.
         self.redline_hard = [re.compile(r if isinstance(r, str) else r["re"]) for r in cfg.get("redline", [])
                              if isinstance(r, str) or not r.get("waivable")]
-        # longest first, so 博格女王 is matched whole rather than as 博格 (see settled_removed)
+        # longest first, so 翠鸟号舰长 is matched whole rather than as 翠鸟号 (see settled_removed)
         settled = sorted(set(cfg.get("settled", [])), key=len, reverse=True)
         gl = sorted({re.escape(t) for t in glossary_dst} if cfg.get("glossary_settled", True) else (),
                     key=len, reverse=True)
@@ -164,8 +164,8 @@ class Rules:
 
     def settled_removed(self, off: str, prop: str) -> set[str]:
         """Settled renderings in `off` that `prop` drops. Replacing one with a longer settled rendering
-        that contains it (医生 -> 首席医生, 博格 -> 博格女王) is not a removal -- but only a rendering
-        `prop` newly introduces counts, so 博格女王 already standing in `off` cannot cover a dropped 博格."""
+        that contains it (医生 -> 首席医生, 翠鸟号 -> 翠鸟号舰长) is not a removal -- but only a rendering
+        `prop` newly introduces counts, so 翠鸟号舰长 already standing in `off` cannot cover a dropped 翠鸟号."""
         was, kept = set(self.settled_all.findall(off)), set(self.settled_all.findall(prop))
         new = kept - was
         return {t for t in was - kept if not any(t in k for k in new)}
@@ -356,7 +356,7 @@ def needs_challenge(f: dict, min_sev: int = 3, sample: float = 0.0, mode: str = 
     `min_sev` are auto-accepted. But the Challenger was then forbidden to veto a flagged finding as
     "the original was fine", so that 0.1% partly measures the rule, not the findings.
 
-    mode "slim" (v1.16, Resistance run): every A/B is challenged, because a passed A/B is written into
+    mode "slim" (v1.16, pilot-book run): every A/B is challenged, because a passed A/B is written into
     the book with nobody looking again -- of 42 flagged A/B challenged in g1-g2, 12 came back amended
     (the proposed fix itself was wrong) and would have gone in as-is under "tier". A flagged C is
     auto-accepted: it lands on the human list anyway. An unflagged C is still challenged (46% of
@@ -459,30 +459,83 @@ def hints(paths: Paths, files: list[str]) -> list[dict]:
     return out
 
 
+def load_verdicts(paths: Paths, g: str, findings) -> tuple[dict, bool]:
+    """Group g's verdicts: auto-accepts (verdicts_g.auto.jsonl) overridden by the Challenger's.
+    -> (verdicts by id, challenged). challenged=False: no Challenger was ever set up for g (no verdicts,
+    auto or challenge file -- e.g. the consistency auditor's D group): every finding is accepted for the
+    human list only and the caller must not auto-apply any. Otherwise a finding without a verdict is
+    rejected as no_verdict (see resolve)."""
+    vp, autop, cp = (paths.f(f"verdicts_{g}.jsonl"), paths.f(f"verdicts_{g}.auto.jsonl"),
+                     paths.f(f"challenge_{g}.jsonl"))
+    if not any(os.path.exists(p) for p in (vp, autop, cp)):
+        return {fid: {"verdict": "accept", "reason": "no challenger"} for fid in findings}, False
+    verdicts = {v["id"]: v for v in read_jsonl(autop)} if os.path.exists(autop) else {}
+    if os.path.exists(vp):
+        verdicts.update({v["id"]: v for v in read_jsonl(vp)})   # a real verdict overrides an auto one
+    return verdicts, True
+
+
+def _sev(x) -> int | None:
+    if isinstance(x, str) and x.strip().isdigit():
+        x = int(x)
+    return x if isinstance(x, int) and not isinstance(x, bool) and x in (1, 2, 3) else None
+
+
+def resolve(f: dict, v: dict | None, segs: dict, rules: Rules) -> str:
+    """Apply Challenger verdict `v` to finding `f` in place -> '' if it survives, else its reject reason.
+    The single place that turns a verdict into the final proposed / category / severity: `final`,
+    `leftover` (merge) and `pick` all call it, so they can never disagree on what survived.
+
+    - verdict must be accept / reject / amend (case and outer blanks ignored); anything else, or an
+      amend without a non-empty `amended`, is rejected as bad_verdict:<value>.
+    - amend: `amended` replaces `proposed` and goes through the gate again (`check`) on `segs`.
+    - explicit `category` / `severity` fields reclassify; a malformed one rejects the finding.
+      Without them CATEGORY_RE / SEVERITY_RE on the free-text reason are a fallback, but the regex may
+      never move a C/D finding into A/B (auto write-back): free text like "不应改为 A，维持 C" matches it."""
+    if not v:
+        return "challenger:no_verdict"
+    raw = v.get("verdict")
+    verdict = raw.strip().lower() if isinstance(raw, str) else raw
+    if verdict not in ("accept", "reject", "amend"):
+        return f"bad_verdict:{raw}"
+    reason = v.get("reason", "") or ""
+    if verdict == "reject":
+        return "challenger:" + reason
+    if verdict == "amend":
+        amended = v.get("amended")
+        if not isinstance(amended, str) or not amended.strip():
+            return f"bad_verdict:{raw}"
+        f["proposed"] = amended
+        ok, why, _, _ = check(f, _seg(segs, f["text_index"]), rules)
+        if not ok:
+            return "amend_failed:" + why
+    cat, sev = v.get("category"), v.get("severity")
+    if cat not in (None, ""):
+        if not isinstance(cat, str) or cat.strip().upper() not in ("A", "B", "C", "D"):
+            return f"bad_verdict:category={cat}"
+        f["category"] = cat.strip().upper()
+    elif m := CATEGORY_RE.search(reason):
+        if not (m.group(1) in ("A", "B") and f["category"] not in ("A", "B")):
+            f["category"] = m.group(1)
+    if sev not in (None, ""):
+        if _sev(sev) is None:
+            return f"bad_verdict:severity={sev}"
+        f["severity"] = _sev(sev)
+    elif m := SEVERITY_RE.search(reason):
+        f["severity"] = int(m.group(2))
+    f["_verdict_reason"] = reason
+    return ""
+
+
 def _apply_verdicts(findings: dict, verdicts: dict, segs: dict, rules: Rules):
     """-> (per_seg findings that survived, rejected)."""
     per_seg, rej = collections.defaultdict(list), []
     for fid, f in findings.items():
-        v = verdicts.get(fid)
-        if not v or v.get("verdict") == "reject":
-            f["_reject"] = "challenger:" + (v.get("reason", "") if v else "no_verdict")
+        why = resolve(f, verdicts.get(fid), segs, rules)
+        if why:
+            f["_reject"] = why
             rej.append(f)
             continue
-        if v.get("verdict") == "amend" and v.get("amended"):
-            f["proposed"] = v["amended"]
-            ok, why, _, _ = check(f, segs.get(int(f["text_index"])), rules)
-            if not ok:
-                f["_reject"] = "amend_failed:" + why
-                rej.append(f)
-                continue
-        reason = v.get("reason", "") or ""
-        f["_verdict_reason"] = reason
-        m = CATEGORY_RE.search(reason)
-        if m:
-            f["category"] = m.group(1)
-        m = SEVERITY_RE.search(reason)
-        if m:
-            f["severity"] = int(m.group(2))
         per_seg[int(f["text_index"])].append(f)
     return per_seg, rej
 
@@ -495,15 +548,13 @@ def final(paths: Paths, rules: Rules, groups: list[str]) -> list[dict]:
             print(f"[{g}] no {os.path.basename(fp)}, skip (run `pre` first)")
             continue
         findings = {f["id"]: f for f in read_jsonl(fp)}
-        autop = paths.f(f"verdicts_{g}.auto.jsonl")
-        if os.path.exists(vp) or os.path.exists(autop):
-            verdicts = {v["id"]: v for v in read_jsonl(autop)} if os.path.exists(autop) else {}
-            if os.path.exists(vp):
-                verdicts.update({v["id"]: v for v in read_jsonl(vp)})   # a real verdict overrides an auto one
-            elif not (os.path.exists(cp := paths.f(f"challenge_{g}.jsonl")) and not read_jsonl(cp)):
-                print(f"[{g}] WARNING: no {os.path.basename(vp)}; challenged findings count as no_verdict")
-        else:   # a group without a Challenger (e.g. the consistency auditor): everything goes to the human list
-            verdicts = {fid: {"verdict": "accept", "reason": "no challenger"} for fid in findings}
+        verdicts, challenged = load_verdicts(paths, g, findings)
+        if not challenged:   # a group without a Challenger (e.g. the consistency auditor): human list only
+            for f in findings.values():
+                f["_human"] = True
+        elif not os.path.exists(vp) and not (os.path.exists(cp := paths.f(f"challenge_{g}.jsonl"))
+                                             and not read_jsonl(cp)):
+            print(f"[{g}] WARNING: no {os.path.basename(vp)}; challenged findings count as no_verdict")
         segs = paths.group_src(g)
         per_seg, rej = _apply_verdicts(findings, verdicts, segs, rules)
         apply_rows, review_rows = [], []
@@ -653,43 +704,33 @@ def _write_review_md(path: str, rows: list[dict], title: str) -> None:
                     f"{_esc(r.get('_verdict_reason', ''))[:80]} |\n")
 
 
-def leftover(paths: Paths, groups: list[str]) -> list[dict]:
-    """Everything that survived the gate + Challenger but was not auto-applied, all groups."""
+def leftover(paths: Paths, rules: Rules, groups: list[str]) -> list[dict]:
+    """Everything that survived the gate + Challenger (same `resolve` as `final`) but was not
+    auto-applied, all groups."""
     rows = []
     for g in groups:
         fp = paths.f(f"findings_{g}.pre.jsonl")
         if not os.path.exists(fp):
             continue
         fs = {f["id"]: f for f in read_jsonl(fp)}
-        vp = paths.f(f"verdicts_{g}.jsonl")
-        vs = {v["id"]: v for v in read_jsonl(vp)} if os.path.exists(vp) else {}
+        vs, _ = load_verdicts(paths, g, fs)
+        segs = paths.group_src(g)
         mp = paths.f(f"apply_{g}.meta.json")
         applied = set()
         if os.path.exists(mp):
             with open(mp, encoding="utf-8") as f:
                 applied = {i for r in json.load(f) for i in r.get("_findings", [])}
         for fid, f in fs.items():
-            v = vs.get(fid, {"verdict": "accept", "reason": "no challenger"})
-            if v.get("verdict") == "reject" or fid in applied:
+            if fid in applied or resolve(f, vs.get(fid), segs, rules):
                 continue
-            f = dict(f)
-            if v.get("amended"):
-                f["proposed"] = v["amended"]
-            f["_verdict_reason"] = v.get("reason", "")
-            m = CATEGORY_RE.search(f["_verdict_reason"] or "")
-            if m:
-                f["category"] = m.group(1)
-            m = SEVERITY_RE.search(f["_verdict_reason"] or "")
-            if m:
-                f["severity"] = int(m.group(2))
             rows.append(f)
     rows.sort(key=lambda r: (-int(r.get("severity") or 0), int(r["text_index"])))
     return rows
 
 
-def merge(paths: Paths, groups: list[str], out: str | None = None) -> int:
+def merge(paths: Paths, groups: list[str], out: str | None = None, rules: Rules | None = None) -> int:
     """Everything that survived the gate + Challenger but was not auto-applied, all groups, one list."""
-    rows = leftover(paths, groups)
+    rows = leftover(paths, rules or load_rules(paths), groups)
     out = out or paths.f("review_ALL.md")
     _write_review_md(out, rows, f"待过目合并清单（{', '.join(groups)}）")
     tally = dict(collections.Counter("%s/%s" % (r["category"], r.get("severity", "")) for r in rows))
@@ -704,26 +745,29 @@ def pick(paths: Paths, rules: Rules, ids: list[str], groups: list[str], out: str
     `exclude` drops ids the human vetoed."""
     want = set(ids or ())
     if min_sev is not None:
-        want |= {f["id"] for f in leftover(paths, groups) if int(f.get("severity") or 0) >= min_sev}
+        want |= {f["id"] for f in leftover(paths, rules, groups) if int(f.get("severity") or 0) >= min_sev}
     want -= set(exclude or ())
     chosen = collections.defaultdict(list)
+    skipped = []
     for g in groups:
         fp = paths.f(f"findings_{g}.pre.jsonl")
         if not os.path.exists(fp):
             continue
-        vp = paths.f(f"verdicts_{g}.jsonl")
-        vs = {v["id"]: v for v in read_jsonl(vp)} if os.path.exists(vp) else {}
-        for f in read_jsonl(fp):
-            if f["id"] in want:
-                if vs.get(f["id"], {}).get("amended"):
-                    f["proposed"] = vs[f["id"]]["amended"]
-                chosen[int(f["text_index"])].append(f)
-                want.discard(f["id"])
+        fs = [f for f in read_jsonl(fp) if f["id"] in want]
+        vs, _ = load_verdicts(paths, g, [f["id"] for f in fs])
+        segs = paths.group_src(g)
+        for f in fs:
+            want.discard(f["id"])
+            why = resolve(f, vs.get(f["id"]), segs, rules)   # same verdict handling as final / merge
+            if why:
+                skipped.append((f["id"], why))
+                continue
+            chosen[int(f["text_index"])].append(f)
     if want:
         print(f"unknown ids: {sorted(want)}")
     proj = cache_io.load_cache(paths.cache)
     cur = {it.text_index: it for it in cache_io.iter_items(proj)}
-    rows, skipped = [], []
+    rows = []
     for idx, fs in chosen.items():
         it = cur.get(idx)
         if it is None:
@@ -731,11 +775,13 @@ def pick(paths: Paths, rules: Rules, ids: list[str], groups: list[str], out: str
             continue
         text = it.translated_text or ""
         applied = []
-        for f in fs:
-            if text.count(f["offending"]) != 1:
-                skipped.append((f["id"], "offending not found once in current text"))
+        for f in fs:   # the full gate again, on the text this apply file will actually overwrite
+            ok, why, new, _ = check(f, {"text_index": idx, "source_text": it.source_text or "",
+                                        "translated_text": text}, rules)
+            if not ok:
+                skipped.append((f["id"], why))
                 continue
-            text = text.replace(f["offending"], f["proposed"], 1)
+            text = new
             applied.append(f["id"])
         if applied:
             hard, _ = audit.lint_pair(it.source_text or "", text, idx in rules.tag_exc)
@@ -746,7 +792,7 @@ def pick(paths: Paths, rules: Rules, ids: list[str], groups: list[str], out: str
     rows.sort(key=lambda r: r["text_index"])
     out = out or paths.f("apply_pick.json")
     write_json(out, [{k: v for k, v in r.items() if not k.startswith("_")} for r in rows])
-    write_json(out.replace(".json", ".meta.json"), rows)
+    write_json(os.path.splitext(out)[0] + ".meta.json", rows)
     print(f"pick: {len(rows)} segment(s) -> {out}" + (f"; skipped {skipped}" if skipped else ""))
     return len(rows)
 
@@ -1154,7 +1200,7 @@ def main(argv=None):
     elif a.cmd == "final":
         final(paths, rules, a.groups)
     elif a.cmd == "merge":
-        merge(paths, a.groups, a.out)
+        merge(paths, a.groups, a.out, rules)
     elif a.cmd == "pick":
         if not a.ids and a.min_sev is None:
             ap.error("pick needs --ids and/or --min-sev")

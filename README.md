@@ -5,7 +5,7 @@
 **Agent 原生的长篇翻译管线** —— 让编码 agent 本身当翻译引擎，端到端译完一本书。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.17.0-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
+[![Version](https://img.shields.io/badge/version-1.17.1-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue.svg)](pyproject.toml)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://claude.com/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-compatible-333.svg)](skills/ainiee-translate/references/codex-tools.md)
@@ -177,7 +177,7 @@ work/review/               # 对抗性审核：config.json、EXAMPLES.md、group
 **项目状态与留痕**（所有阶段共读）：
 
 - `decisions.json`（`state` 命令维护）：`settled` 已定口径、`errata` 原文笔误、`tag_exceptions` 段级标记例外、`lint` 本书规则；`state card` 出一张规则卡，`batch bundle` 与 `review rules` 自动带上。
-- `batch apply` 是唯一的修正写回入口：保住每段状态，可只给 `patches`；`--source` 记进 `provenance.jsonl`。来源为 `dual` / `codex` / `user` / `editor` 的修正受保护——之后的审核提议若要把删掉的说法改回去，闸门以 `E_reverts_fix` 拒收。
+- `batch apply` 是唯一的修正写回入口：保住每段状态，可只给 `patches`；`--source` 记进 `provenance.jsonl`。来源为 `dual` / `codex` / `user` / `editor` 的修正受保护——之后的审核提议若要把删掉的说法改回去，闸门以 `E_reverts_fix` 拒收；`polish write`、`batch write` 和不带受保护来源的 `batch apply` 同样拒收（`reverts_fix`）。`batch write` 只写未译段，已译段的修正走 `batch apply`。
 - 复审只看改过的段：`batch split --changed-since <审前快照>` / `cache dump --changed-since`。
 
 ## 命令
@@ -213,7 +213,7 @@ work/review/               # 对抗性审核：config.json、EXAMPLES.md、group
 <summary>CLI 参考（展开）</summary>
 
 ```
-parse       --input I [--type AutoType] [--exclude 通配,…] [--out cache.json]
+parse       --input I [--type AutoType] [--exclude 通配,…] [--out cache.json] [--force]
 scope       <cache> [--apply] [--keep ID…] [--drop ID…] [--force]
 glossary    build --config C [--analysis A] --out O
             filter --locked L --for SRC_JSON… --out O
@@ -225,7 +225,7 @@ batch       read <cache> [--size N]  |  read-translated <cache> [--size N]
                   [--range A-B] [--prefix P] [--changed-since OLD_CACHE]
             bundle <cache> SRC_JSON… [--stage …] [--locked L] [--include MD…] [--out-dir D]
             validate <src.json> <trans.json|jsonl> [--cache C] [--allow-tag-mismatch]
-            write <cache> FILES… [--force] [--allow-tag-mismatch]
+            write <cache> FILES… [--overwrite] [--force] [--allow-tag-mismatch]
             apply <cache> FILES… [--source S] [--reason R] [--force] [--allow-tag-mismatch]
 polish      write <cache> FILES… [--force] [--allow-tag-mismatch]
 cache       stats <cache>  |  show <cache> --range A-B [--status …] [--width N]
@@ -240,7 +240,7 @@ module      list | show <名> | create <名> [--source-language X] [--target-lan
 profile     import --profile P --name N [--target-language X] [--force]
 project     list [--ainiee-cache-dir D]
             import (--cache 路径 | --ainiee 项目ID) --work W [--ainiee-cache-dir D]
-export      --cache C --output O --input I [--finalize] [--title T] [--name N] [--deliver PATH]
+export      --cache C --output O --input I [--finalize [--allow-partial]] [--title T] [--name N] [--deliver PATH]
 verify      <cache> <locked> [--json] [--out F] [--baseline F] [--write-baseline F]
 scan        <cache> [--locked L] [--mode discover|terms|strays|merges|pending|all]
             [--min-merge-len N] [--min-count N] [--json] [--out F] [--top N]
@@ -268,6 +268,12 @@ review      （除 dual-merge 外都接受 [--dir DIR] [--run RUN]）
 
 `verify` / `scan` / `audit` 默认向 stdout 打摘要；脚本解析请加 `--json`。`batch write` / `apply` / `polish write` 接受多个 JSON 或 JSONL 文件。
 
+- `batch write` 只写未译段：已译 / 已润色 / 已排除的段拒收（`already_translated` / `already_polished` / `excluded`），修正走 `batch apply`，确要重译加 `--overwrite`（`--force` 不放行这一条）。
+- `batch write` / `polish write` / 不带受保护来源的 `batch apply`：新文本带回受保护修正（`dual` / `codex` / `user` / `editor`）删掉的说法即拒收 `reverts_fix`，`--force` 也不放行；确要改回用 `batch apply --source user`。
+- `parse` 不覆盖已有译文的 cache（`--force` 先备份再覆盖）；一段都没解析出来时报错退出、不落盘。
+- `export` 打印未译段计数；`--finalize` 下有未译段即失败（`--allow-partial` 放行）；有文件没有对应 writer 时非零退出。
+- `scope` 对单个 txt（无文件结构）和非拉丁文字源文不做判定；`--apply --keep ID` 会把该文件已排除、无译文的段恢复成未译。
+
 </details>
 
 ## 模块
@@ -281,7 +287,7 @@ polish_prompt.md     # 润色提示词
 glossary.locked.json # 锁定词汇表 {characters, terms, non_translate}
 ```
 
-`module load` 只把这三份内容文件拷进项目（已存在先时间戳备份）；`module create` 另建的空 `style.md` 目前管线不读——风格要求请写进 `translate_prompt.md`。
+`module load` 只把这三份内容文件拷进项目（已存在先时间戳备份；模块里空白的提示词、没有条目的词汇表不覆盖项目里已有的非空文件；模块词汇表缺了项目表里的条目时照常覆盖，打印少了几条）；`module create` 另建的空 `style.md` 目前管线不读——风格要求请写进 `translate_prompt.md`。
 
 `glossary.locked.json` 的形状：
 
@@ -372,7 +378,7 @@ glossary.locked.json # 锁定词汇表 {characters, terms, non_translate}
 <PFX> -m ainiee_translate.repair work/cache.json --list-marked # 列出译文需重做的段
 ```
 
-`repair` 只补 `<i>`/`<b>` 与空格，不会给存量项目补 `⟦n⟧` 占位符。
+`repair` 只补 `<i>`/`<b>` 与空格，不会给存量项目补 `⟦n⟧` 占位符；已带占位符（新版解析）的段直接跳过。
 
 ## 推荐流程与模型
 

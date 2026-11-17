@@ -25,6 +25,7 @@ import time
 
 _HAN = re.compile(r"[一-鿿]")
 EMPTY = {"settled": [], "errata": {}, "tag_exceptions": {}, "lint": []}
+PROTECTED_SOURCES = ("dual", "codex", "user", "editor")   # provenance whose meaning fixes later passes must keep
 
 
 def work_dir(cache_path: str) -> str:
@@ -103,7 +104,11 @@ def history(cache_path: str | None) -> dict[int, list[dict]]:
     return out
 
 
-def protected_removals(cache_path: str | None, protect=("dual", "codex", "user", "editor")) -> dict[int, set[str]]:
+def is_protected(source) -> bool:
+    return str(source or "").split(":")[0] in PROTECTED_SOURCES
+
+
+def protected_removals(cache_path: str | None, protect=PROTECTED_SOURCES) -> dict[int, set[str]]:
     """Snippets that a meaning fix removed, per segment: a later pass must not reintroduce them."""
     out: dict[int, set[str]] = {}
     for idx, rows in history(cache_path).items():
@@ -133,7 +138,7 @@ def card(cache_path: str, lo: int | None = None, hi: int | None = None) -> str:
         L += [f"- {k}: {v}" for k, v in sorted(tex.items())]
     fixed = {i: rs for i, rs in history(cache_path).items() if inr(i)}
     prot = [(i, r) for i, rs in sorted(fixed.items()) for r in rs
-            if str(r.get("source", "")).split(":")[0] in ("dual", "codex", "user", "editor") and r.get("reason")]
+            if is_protected(r.get("source")) and r.get("reason")]
     if prot:
         L.append("## 已修过的语义问题（不要改回去）")
         L += [f"- {i}: {r['reason']}" for i, r in prot]

@@ -122,6 +122,34 @@ def test_repair_rebuilds_source_from_original_html(tmp_path):
     assert "A <b>loud</b> noise." in src
 
 
+def test_repair_leaves_tokenized_segments_alone(tmp_path, capsys):
+    """New-parser segments carry ⟦n⟧ placeholders; re-extracting them would glue the footnote
+    number into the text and drop the link."""
+    from ainiee_translate import repair
+    epub = tmp_path / "links.epub"
+    with zipfile.ZipFile(epub, "w") as z:
+        z.writestr("mimetype", "application/epub+zip")
+        z.writestr("META-INF/container.xml", CONTAINER)
+        z.writestr("content.opf", OPF)
+        z.writestr("ch1.xhtml", LINK_XHTML)
+    proj = io_dispatch.parse_input(str(epub))
+    for it in cache_io.iter_items(proj):
+        if not it.extra.get("epub_tokens"):
+            it.source_text = it.source_text.replace("<i>", "").replace("</i>", "")   # an old-style one
+    cache = tmp_path / "cache.json"
+    cache_io.save_cache(proj, str(cache))
+    before = {it.text_index: it.source_text for it in cache_io.iter_items(proj)}
+
+    assert repair.main([str(cache), "--apply"]) == 0
+    out = capsys.readouterr().out
+    assert "跳过 2 段" in out and "需改写 1 段" in out
+    after = {it.text_index: it.source_text for it in cache_io.iter_items(cache_io.load_cache(str(cache)))}
+    changed = {i for i in after if after[i] != before[i]}
+    assert [after[i] for i in changed] == ["Plain <i>words</i>."]
+    assert any("⟦2⟧" in s for s in after.values())
+    assert len(list(tmp_path.glob("cache.json.bak.*"))) == 1
+
+
 NCX = """<?xml version="1.0" encoding="utf-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
 <navMap><navPoint id="n1" playOrder="1">

@@ -237,20 +237,20 @@ def test_rules_slice(tmp_path, make_project):
 
 
 def test_settled_longer_rendering_and_glossary_override():
-    seg = {"text_index": 1, "source_text": "She was chief medical officer. The Borg queen.",
-           "translated_text": "她首先是医生。博格来了，博格女王说。"}
-    r = _rules(settled=["博格", "博格女王", "首席医疗官"], _glossary=["医生"])
+    seg = {"text_index": 1, "source_text": "She was chief medical officer. The Halcyon came, its captain said.",
+           "translated_text": "她首先是医生。翠鸟号来了，翠鸟号舰长说。"}
+    r = _rules(settled=["翠鸟号", "翠鸟号舰长", "首席医疗官"], _glossary=["医生"])
     # a longer settled rendering that contains the removed one keeps it
-    assert review.check(_f("博格来了", "博格女王来了"), seg, r)[0]
+    assert review.check(_f("翠鸟号来了", "翠鸟号舰长来了"), seg, r)[0]
     # ... but one already standing in `off` does not cover a dropped shorter one
-    assert review.check(_f("博格来了，博格女王说", "他们来了，博格女王说"), seg, r)[1] == "E_settled_removed"
+    assert review.check(_f("翠鸟号来了，翠鸟号舰长说", "他们来了，翠鸟号舰长说"), seg, r)[1] == "E_settled_removed"
     # glossary-only dst: an A finding may drop it (and is then always challenged) ...
     f = _f("她首先是医生", "她首先是首席医疗官", cat="A")
     ok, _, _, override = review.check(f, seg, r)
     assert ok and override == ["医生"] and "_settled_override" not in f      # check() does not mutate
     # ... a B/C finding may not, and nobody may drop a config `settled` rendering
     assert review.check(_f("她首先是医生", "她首先是首席医疗官"), seg, r)[1] == "E_settled_removed"
-    assert review.check(_f("博格来了", "他们来了", cat="A"), seg, r)[1] == "E_settled_removed"
+    assert review.check(_f("翠鸟号来了", "他们来了", cat="A"), seg, r)[1] == "E_settled_removed"
 
 
 def test_needs_challenge_slim_mode():
@@ -347,3 +347,128 @@ def test_settled_override_is_always_challenged(tmp_path, make_project, capsys):
     assert "no Challenger needed" in capsys.readouterr().out
     res = review.final(paths, rules, ["g1"])[0]
     assert "WARNING" not in capsys.readouterr().out and res["review"] == 1
+
+
+# ------------------------------------------------- verdict -> write-back ----
+def _group(tmp_path, make_project, findings, rules=None):
+    """cache 1 "一 二 三" / 2 "四 <i>五</i> 六" / 3 "七" split into g1; findings through `pre`."""
+    cache = _project_dir(tmp_path, make_project)
+    paths = review.Paths(cache)
+    os.makedirs(paths.groups)
+    batch.main(["split", cache, "--stage", "review", "--prefix", "g", "--target", "10",
+                "--out-dir", paths.groups, "--context", "0"])
+    rules = rules or review.load_rules(paths)
+    review.write_jsonl(paths.f("findings_g1.jsonl"), findings)
+    assert review.pre(paths, rules, [paths.f("findings_g1.jsonl")])[0]["rejected"] == 0
+    return cache, paths, rules
+
+
+def _fd(n, ti, off, prop, cat="B", sev=2, **kw):
+    return {"id": f"g1-00{n}", "text_index": ti, "category": cat, "severity": sev, "offending": off,
+            "proposed": prop, **kw}
+
+
+def _rejects(paths):
+    return {r["id"]: r["_reject"] for r in review.read_jsonl(paths.f("rejected_g1.jsonl"))}
+
+
+def _apply(paths, name="apply_g1.json"):
+    return json.load(open(paths.f(name), encoding="utf-8"))
+
+
+def test_final_without_verdicts_never_auto_applies(tmp_path, make_project, capsys):
+    rules = review.Rules({"redline": [{"re": "二|贰", "waivable": True}]})
+    cache, paths, _ = _group(tmp_path, make_project, [
+        _fd(1, 1, "二", "贰", cat="A", redline_waiver="source: two"),     # forced to the Challenger
+        _fd(2, 1, "三", "叁"),
+        _fd(3, 2, "六", "陆", cat="C", flags=["g1-b1"])], rules)
+    # no challenge / verdicts file at all (segs never run): human list only, A/B included
+    res = review.final(paths, rules, ["g1"])[0]
+    assert (res["apply_segments"], res["review"], res["rejected"]) == (0, 3, 0)
+    assert _apply(paths) == [] and review.merge(paths, ["g1"], rules=rules) == 3
+    # sent to a Challenger whose verdicts never landed: challenged findings are no_verdict, not applied
+    review.segs_for(paths, [paths.f("findings_g1.pre.jsonl")])
+    capsys.readouterr()
+    res = review.final(paths, rules, ["g1"])[0]
+    assert "WARNING" in capsys.readouterr().out
+    assert (res["apply_segments"], res["review"], res["rejected"]) == (0, 0, 3)
+    assert set(_rejects(paths).values()) == {"challenger:no_verdict"}
+    assert review.merge(paths, ["g1"], rules=rules) == 0
+    assert review.pick(paths, rules, ["g1-001", "g1-002"], ["g1"]) == 0
+    # slim: the flagged C is auto-accepted (human list), the challenged A/B still need a verdict
+    review.segs_for(paths, [paths.f("findings_g1.pre.jsonl")], mode="slim")
+    res = review.final(paths, rules, ["g1"])[0]
+    assert (res["apply_segments"], res["review"]) == (0, 1)
+    assert [r["id"] for r in review.leftover(paths, rules, ["g1"])] == ["g1-003"]
+
+
+def test_verdict_values_are_validated(tmp_path, make_project):
+    cache, paths, rules = _group(tmp_path, make_project, [
+        _fd(1, 1, "一", "壹"), _fd(2, 1, "二", "贰"), _fd(3, 1, "三", "叁"),
+        _fd(4, 2, "四", "肆"), _fd(5, 2, "六", "陆"), _fd(6, 3, "七", "柒")])
+    review.write_jsonl(paths.f("verdicts_g1.jsonl"), [
+        {"id": "g1-001", "verdict": "rejected", "reason": "x"},
+        {"id": "g1-002", "verdict": "Reject", "reason": "fine"},
+        {"id": "g1-003", "verdict": "否决", "reason": "x"},
+        {"id": "g1-004", "verdict": "amend", "reason": "x"},                    # amend without `amended`
+        {"id": "g1-005", "verdict": " Accept ", "reason": "ok"},
+        {"id": "g1-006", "verdict": "amend", "amended": "  ", "reason": "x"}])
+    res = review.final(paths, rules, ["g1"])[0]
+    assert (res["apply_segments"], res["review"], res["rejected"]) == (1, 0, 5)
+    assert _apply(paths) == [{"text_index": 2, "polished_text": "四 <i>五</i> 陆"}]
+    assert _rejects(paths) == {"g1-001": "bad_verdict:rejected", "g1-002": "challenger:fine",
+                               "g1-003": "bad_verdict:否决", "g1-004": "bad_verdict:amend",
+                               "g1-006": "bad_verdict:amend"}
+    assert review.merge(paths, ["g1"], rules=rules) == 0
+    assert review.pick(paths, rules, [f"g1-00{n}" for n in range(1, 7)], ["g1"]) == 1   # only the valid accept
+    assert _apply(paths, "apply_pick.json") == [{"text_index": 2, "polished_text": "四 <i>五</i> 陆"}]
+
+
+def test_amend_failed_and_missing_verdict_not_resurrected(tmp_path, make_project):
+    cache, paths, rules = _group(tmp_path, make_project, [
+        _fd(1, 3, "七", "柒", cat="C"),
+        _fd(2, 1, "二", "贰", cat="C"),
+        _fd(3, 1, "三", "叁", cat="C"),
+        _fd(4, 2, "六", "陆", cat="B")])
+    review.write_jsonl(paths.f("verdicts_g1.jsonl"), [
+        {"id": "g1-001", "verdict": "amend", "amended": "「柒」", "reason": "x"},   # amended text fails the gate
+        {"id": "g1-002", "verdict": "amend", "amended": "两", "reason": "better"},
+        {"id": "g1-004", "verdict": "amend", "amended": "Six", "reason": "x"}])     # g1-003: no verdict
+    res = review.final(paths, rules, ["g1"])[0]
+    assert (res["apply_segments"], res["review"], res["rejected"]) == (0, 1, 3)
+    assert _rejects(paths) == {"g1-001": "amend_failed:forbid_char", "g1-003": "challenger:no_verdict",
+                               "g1-004": "amend_failed:name_touch"}
+    assert review.merge(paths, ["g1"], rules=rules) == 1
+    md = open(paths.f("review_ALL.md"), encoding="utf-8").read()
+    assert "g1-002" in md and "| 两 |" in md and "g1-001" not in md and "g1-003" not in md
+    assert review.pick(paths, rules, ["g1-001", "g1-002", "g1-003", "g1-004"], ["g1"]) == 1
+    assert _apply(paths, "apply_pick.json") == [{"text_index": 1, "polished_text": "一 两 三"}]
+    assert review.pick(paths, rules, [], ["g1"], min_sev=1) == 1
+
+
+def test_category_reclassification(tmp_path, make_project):
+    cache, paths, rules = _group(tmp_path, make_project, [
+        _fd(1, 1, "一", "壹", cat="C"), _fd(2, 1, "二", "贰", cat="C"), _fd(3, 2, "六", "陆", cat="C"),
+        _fd(4, 3, "七", "柒", cat="A", sev=3), _fd(5, 2, "四", "肆", cat="C")])
+    review.write_jsonl(paths.f("verdicts_g1.jsonl"), [
+        {"id": "g1-001", "verdict": "accept", "reason": "不应改为 A，维持 C"},      # free text cannot promote
+        {"id": "g1-002", "verdict": "accept", "reason": "reclassified as B"},
+        {"id": "g1-003", "verdict": "accept", "category": "a", "severity": "3", "reason": "其实是误译"},
+        {"id": "g1-004", "verdict": "accept", "category": "C", "severity": 1, "reason": "应为 A 无误"},
+        {"id": "g1-005", "verdict": "accept", "category": "E", "reason": "x"}])
+    res = review.final(paths, rules, ["g1"])[0]
+    assert _apply(paths) == [{"text_index": 2, "polished_text": "四 <i>五</i> 陆"}]   # explicit field: C -> A
+    assert _rejects(paths) == {"g1-005": "bad_verdict:category=E"}
+    md = open(paths.f("review_g1.md"), encoding="utf-8").read()
+    assert "g1-001 | 1 | C/2" in md and "g1-002 | 1 | C/2" in md and "g1-004 | 3 | C/1" in md
+    assert res["review"] == 3
+    left = {r["id"]: (r["category"], r["severity"]) for r in review.leftover(paths, rules, ["g1"])}
+    assert left == {"g1-001": ("C", 2), "g1-002": ("C", 2), "g1-004": ("C", 1)}
+
+
+def test_pick_out_without_json_suffix(tmp_path, make_project):
+    cache, paths, rules = _group(tmp_path, make_project, [_fd(1, 3, "七", "柒", cat="C")])
+    out = str(tmp_path / "picked")
+    assert review.pick(paths, rules, ["g1-001"], ["g1"], out=out) == 1
+    assert json.load(open(out, encoding="utf-8")) == [{"text_index": 3, "polished_text": "柒"}]
+    assert json.load(open(out + ".meta.json", encoding="utf-8"))[0]["_findings"] == ["g1-001"]
