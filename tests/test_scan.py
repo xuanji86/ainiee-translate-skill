@@ -94,3 +94,14 @@ def test_merges_skip_untranslated():
     items = [{"text_index": 5, "source_text": "thenaiskosfragment",
               "translated_text": "", "translation_status": 0}]
     assert scan.find_merged_tokens(items) == []
+
+
+def test_untranslated_terms_with_a_glossary_larger_than_the_regex_cache():
+    locked = {"terms": [{"src": f"filler{n}", "dst": "x"} for n in range(600)]
+                       + [{"src": "Coastguard", "dst": "海岸警卫队"}, {"src": "Smith’s Yard", "dst": "史密斯船坞"},
+                          {"src": "guard", "dst": "卫兵"}]}
+    items = [{"text_index": 1, "translation_status": 1, "source_text": "The Coastguard came.", "translated_text": "Coastguard 来了。"},
+             {"text_index": 2, "translation_status": 2, "source_text": "At Smith's Yard.", "translated_text": "在 Smith's Yard。"},
+             {"text_index": 3, "translation_status": 1, "source_text": "The Coastguard left.", "translated_text": "海岸警卫队走了。"}]
+    got = {r["src"]: r["segments"] for r in scan.find_untranslated_terms(items, locked)}
+    assert got == {"Coastguard": [1], "Smith’s Yard": [2]}      # whole words only: "guard" inside Coastguard is no hit

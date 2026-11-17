@@ -46,9 +46,10 @@ def import_cache(cache_path: str, work: str) -> dict:
     wdir = os.path.join(work, "work")
     os.makedirs(wdir, exist_ok=True)
     dst = os.path.join(wdir, "cache.json")
-    if os.path.exists(dst):
-        helpers.backup_file(dst)
-    cache_io.save_cache(project, dst)
+    with cache_io.locked(dst):      # a write-back in flight finishes first instead of racing the replace
+        if os.path.exists(dst):
+            helpers.backup_file(dst)
+        cache_io.save_cache(project, dst)
     s = _summary(project, dst)
     s["source"] = cache_path
     return s

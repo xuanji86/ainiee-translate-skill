@@ -111,6 +111,7 @@ review/
   config.json          项目规则（见下）；没有也能跑（只用词汇表 dst 当定稿术语）
   groups/grp_X_src.json  batch split --stage review 的产物（含 translated_text）+ grp_X_ctx.json
   findings_X.jsonl     Reviewer 产出 → findings_X.pre.jsonl（过闸门）/ rejected_X.jsonl
+                       （pre 写闸门拒收；final 追加 Challenger 否决等，重跑 final 只替换自己那部分，不重复累加）
   challenge_X.jsonl    送 Challenger 的 findings（--mode slim / --tier 时只是一部分）；segs_X.json 为其涉及的段
   verdicts_X.auto.jsonl  自动放行的 accept（slim：有 flag 的 C/D；tier：有 flag 的低严重度；final 时被真 verdict 覆盖）
   verdicts_X.jsonl     Challenger 产出
@@ -134,18 +135,19 @@ review/
  "leak_files": ["EXAMPLES.md"]}
 ```
 
-- `redline`：**改动即拒，提及允许**——`offending` 与 `proposed` 里各正则命中的多重集必须相同。放用户裁定过的
+- `redline`：**改动即拒，提及允许**——`offending` 与 `proposed` 里各正则命中的多重集必须相同（比的是整段命中，正则里带捕获组也一样）。放用户裁定过的
   「看似不一致其实故意」的写法（并存的英/中译名、军衔写法、舰名带号…）。第一版用「提及即拒」误杀了
   `竖发→刺猬似短发`（子串里带着没动的「安全官」），别走回头路。
 - `settled`：定稿术语，**只许加不许删**——改向定稿是对的（数据恢复队→组），从 offending 里删掉不行。
-  `glossary_settled`（默认 true）把词汇表所有 `dst` 也当定稿术语。两条放行规则（v1.16）：
+  `glossary_settled`（默认 true）把词汇表所有 `dst` 也当定稿术语；`dst` 写成 `飞艇/飞船` 多译法时每个译法各算一个定稿词。
+  按出现次数计：`offending` 里出现两次的定稿词，`proposed` 里只剩一次也算删。两条放行规则（v1.16）：
   1. 换成**包含原词的更长定稿词**不算删除（`医生→首席医生`、`翠鸟号→翠鸟号舰长`）；定稿词按长度优先匹配。
   2. 词汇表 `dst` 常是脱离语境的短词，它本身就可能是误译（`Doctor→医生` 撞上 `chief medical officer`；泛指的
      `an admiral` 被译成军衔「上将」）。**A 类** finding 可以删掉**只来自词汇表**的定稿词（`config.json` 的 `settled` 仍是硬约束），
      这种条目带 `_settled_override` 且**永远送 Challenger**。试点书里 `首先是医生→首先是首席医疗官`、`上将的访问码→将官的访问码`
      原先都被 `E_settled_removed` 误拦，只能主控强写。
   B/C 类改掉语境依赖的词条（`crew` 舰上「船员」/站上「站上人员」）仍会被拒，看 `rejected_X.jsonl` 里的 `E_settled_removed` 手工放行。
-- `forbid`：绝不允许引入的字符（默认「」和 ASCII 引号）。`soft_block`：不得新增的 audit 软问题（默认半角标点/「」/…）。
+- `forbid`：不得**新增**的字符（默认「」和 ASCII 引号）——`offending` 里原本就有的可以留，`proposed` 里多出来的才拒 `forbid_char`。`soft_block`：不得新增的 audit 软问题（默认半角标点/「」/…）。
 - `term_only` / `norm`：只给 `benchmark` 用——人工校对期间顺手做的批量定名替换（舰长→上校）不算「实质修改」，
   两边文本套同一映射后相同就剔出分母。
 - `leak_files`：项目里收录了本书病例的清单文件；`score` 会把旧译含这些病例的段标为「答案泄露」另算一行。
@@ -186,8 +188,13 @@ review/
 <PFX> -m ainiee_translate.batch apply <PROJ>/work/cache.json $REV/apply_pick.json --source user
 ```
 
-闸门顺序（`review pre` 逐条）：必填字段 → 类别 ∈ A–D → `offending` 恰好一次 → 红线/定稿/禁字 →
-`<i>/<b>` 成对（`audit.lint_pair`）→ 不新增 `soft_block` 软问题 → 拉丁 token 多重集不变（除 A+`latin_change` → 转人工）。
+闸门顺序（`review pre` 逐条）：必填字段 → 字段类型（`id` 字符串/整数，`offending`/`proposed` 字符串，否则 `bad_type`）→
+类别 ∈ A–D → `severity` 缺省或整数 1/2/3（否则 `bad_severity`）→ `offending` 恰好一次 → 红线/定稿/禁字 →
+`<i>/<b>` 成对且不交叉（`audit.lint_pair`）→ 不新增 `soft_block` 软问题 → 拉丁 token 多重集不变（除 A+`latin_change` → 转人工）。
+跨条目两条：同一文件里重复的 `id`，后出现的拒 `duplicate_id`（否则 `final` 按 id 取数时会悄悄丢一条）；
+`flags` 只保留 `flags_X.jsonl` 里存在、且 `text_index` 与该 finding **同段**的 flag，其余清掉并记在 `_flags_dropped`
+（没有 flags 文件就全清）——`segs --mode slim/tier` 靠 `flags` 决定谁免复核，引用别段或不存在的 flag 不能算佐证。
+组名取文件名里 `findings_` 之后的整段（`findings_codex-1.jsonl` → `codex-1`），可带 `-`/`_`。
 `review final`：reject / 非法 verdict 丢弃；amend 用 `amended` 重过闸门；同一段多条按顺序叠加到同一份文本再查一次标记。
 从没送审的组（无 `challenge_X` / `verdicts_X` / `verdicts_X.auto` 文件，如 D）全部进过目表，**一条也不自动写回**；
 送审了但 `verdicts_X.jsonl` 没落地 → 送审条目按 `challenger:no_verdict` 拒收（打 WARNING），verdicts 到了再跑 `final`。

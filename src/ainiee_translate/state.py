@@ -172,7 +172,9 @@ def main(argv=None):
         print(card(a.cache, lo, hi), end="")
         return 0
     if a.cmd == "settle":
-        d["settled"] = [x for x in d["settled"] if x.get("dst") != a.dst]
+        # replaces the entry for this dst + src; the same dst settled for another src is a separate decision
+        d["settled"] = [x for x in d["settled"]
+                        if not (x.get("dst") == a.dst and (not a.src or not x.get("src") or x["src"] == a.src))]
         d["settled"].append({k: v for k, v in (("dst", a.dst), ("src", a.src), ("note", a.note)) if v})
     elif a.cmd == "errata":
         d["errata"][str(a.index)] = a.note

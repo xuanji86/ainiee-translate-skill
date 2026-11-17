@@ -26,6 +26,14 @@ def _strip_title(source: str) -> str:
     return " ".join(words)
 
 
+def title_only(raw: list[dict]) -> list[str]:
+    """Seed names that are nothing but title words ("Captain", "Dr."): clean_characters drops them —
+    kept as a character, the title would be left untranslated wherever it occurs. The rare person
+    actually called Bishop has to be added by hand, so the caller lists these."""
+    out = [c.get("source", "") for c in raw if (c.get("source") or "").strip() and not _strip_title(c["source"])]
+    return list(dict.fromkeys(out))
+
+
 def _is_suffix(short: str, long_: str) -> bool:
     st, lt = short.split(), long_.split()
     return 0 < len(st) < len(lt) and lt[-len(st):] == st
@@ -56,11 +64,12 @@ def clean_characters(raw: list[dict]) -> list[dict]:
                 ambiguous[n] = parents
 
     out = []
+    surnames = [c.split()[-1] for c in canonicals if len(c.split()) > 1]
     for c in sorted(canonicals, key=lambda s: forms[s]["order"]):
         aliases = {a for a, p in canonical_of.items() if p == c and a != c}
         toks = c.split()
-        # Surname alias, only when no other character claims that surname.
-        if len(toks) > 1 and toks[-1] not in canonical_of:
+        # Surname alias, only when no other character claims or shares that surname.
+        if len(toks) > 1 and toks[-1] not in canonical_of and surnames.count(toks[-1]) == 1:
             aliases.add(toks[-1])
         members = [c] + sorted(aliases & set(forms))
         gender = next((forms[m]["gender"] for m in members if forms[m]["gender"]), "")

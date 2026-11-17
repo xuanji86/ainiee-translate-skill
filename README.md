@@ -5,7 +5,7 @@
 **Agent 原生的长篇翻译管线** —— 让编码 agent 本身当翻译引擎，端到端译完一本书。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.17.1-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
+[![Version](https://img.shields.io/badge/version-1.17.2-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue.svg)](pyproject.toml)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://claude.com/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-compatible-333.svg)](skills/ainiee-translate/references/codex-tools.md)
@@ -135,7 +135,7 @@ PYTHONPATH="$SKILL_DIR/scripts" "$AINIEE_PY" \
 
 - **状态驱动**：每段有 `translation_status`——`0` 未译、`1` 已译、`2` 已润色、`7` 排除。`batch read` 只返回未译段，中断后重跑天然续上。
 - **只译该译的**：`scope` 按书内文件判定，只留正文（章节、序幕/尾声/间章、分部页）、紧邻正文的背景说明页和两份目录；书评、版权、献词、题记、致谢、作者简介、广告页标为排除，导出保留原文。先预览，确认后 `--apply`，`--keep/--drop ID` 纠错。
-- **写回有闸门、有锁、有备份**：空译、`<i>`/`<b>` 不成对、`⟦n⟧` 占位符缺/多/改号、未知 index 一律拒收（`--allow-tag-mismatch` 只放行标记数，不放行占位符）；文件锁 + 原子写（Windows 无 `fcntl`，锁为空操作）；写前时间戳备份 `cache.json.bak.YYYYMMDD_HHMMSS`。
+- **写回有闸门、有锁、有备份**：空译、`<i>`/`<b>` 数量不符或反序/交叉嵌套（含与 `⟦n⟧…⟦/n⟧` 交叉）、`⟦n⟧` 占位符缺/多/改号、未知 index 一律拒收（`--allow-tag-mismatch` 只放行标记数，不放行占位符和嵌套错乱）；文件锁 + 原子写（Windows 无 `fcntl`，锁为空操作）；有实际改动才写时间戳备份 `cache.json.bak.YYYYMMDD_HHMMSS`（全部拒收或内容没变的写入不备份，重试坏文件不会把还原点轮转掉）。
 - **富文本保真**：行内斜体/粗体在 `source_text` 里统一成 `<i>…</i>` / `<b>…</b>`，导出时按该段原文的实际写法（`<i>`、`<em>`、`<span class="italic1">` …）还原。epub 段内的超链接、脚注号、id 锚点、行内图片写成 `⟦n⟧`（整个元素，不译）或 `⟦n⟧…⟦/n⟧`（包住的文字照译），原 HTML 存在 `extra.epub_tokens`，导出时还原。
 - **定稿导出**：`export --finalize`（epub）写目标语言元数据、**固定的 `dc:identifier`**（重导覆盖阅读器里的原条目而不是新增一本）、查 XML / 链接 / 锚点、核对每个已译段都在成品里，可 `--deliver` 复制到交付路径。
 
@@ -167,7 +167,7 @@ work/review/               # 对抗性审核：config.json、EXAMPLES.md、group
 <PFX> -m ainiee_translate.batch bundle work/cache.json work/par/grp_*_src.json --include work/user_prompt.md
 #   … 每个 subagent 读一次 bundle_N.md，写一次 trans_N.jsonl + newterms_N.txt …
 <PFX> -m ainiee_translate.batch validate work/par/grp_1_src.json work/par/trans_1.jsonl --cache work/cache.json
-<PFX> -m ainiee_translate.glossary merge-newterms --locked work/glossary.locked.json work/par/newterms_*.txt   # 预览；跨组译法不同报 CONFLICT
+<PFX> -m ainiee_translate.glossary merge-newterms --locked work/glossary.locked.json work/par/newterms_*.txt   # 预览；跨组译法不同、或与表内已有译法不同都报 CONFLICT
 <PFX> -m ainiee_translate.batch write work/cache.json work/par/trans_*.jsonl
 <PFX> -m ainiee_translate.glossary merge-newterms --locked work/glossary.locked.json work/par/newterms_*.txt --apply
 ```
@@ -230,8 +230,8 @@ batch       read <cache> [--size N]  |  read-translated <cache> [--size N]
 polish      write <cache> FILES… [--force] [--allow-tag-mismatch]
 cache       stats <cache>  |  show <cache> --range A-B [--status …] [--width N]
             dump <cache> [--range A-B] --out F [--status …] [--changed-since OLD_CACHE]
-            set-status <cache> --range A-B --from N --to N [--apply]
-            fill-dupes <cache> [--max-words N] [--apply]
+            set-status <cache> --range A-B --from N --to N [--apply]     （N ∈ 0/1/2/7）
+            fill-dupes <cache> [--max-words N] [--apply]                 （过写回闸门，拒收的列出、退出码 1）
 state       show <cache>  |  settle <cache> --dst D [--src S] [--note N]
             errata <cache> IDX --note N  |  tag-exception <cache> IDX --reason R
             lint-rule <cache> NAME --re REGEX [--msg M]  |  card <cache> [--range A-B]
@@ -268,6 +268,7 @@ review      （除 dual-merge 外都接受 [--dir DIR] [--run RUN]）
 
 `verify` / `scan` / `audit` 默认向 stdout 打摘要；脚本解析请加 `--json`。`batch write` / `apply` / `polish write` 接受多个 JSON 或 JSONL 文件。
 
+- 写回只在有实际改动时备份：闸门全部拒收、或内容与状态都没变的写入不产生 `.bak`。
 - `batch write` 只写未译段：已译 / 已润色 / 已排除的段拒收（`already_translated` / `already_polished` / `excluded`），修正走 `batch apply`，确要重译加 `--overwrite`（`--force` 不放行这一条）。
 - `batch write` / `polish write` / 不带受保护来源的 `batch apply`：新文本带回受保护修正（`dual` / `codex` / `user` / `editor`）删掉的说法即拒收 `reverts_fix`，`--force` 也不放行；确要改回用 `batch apply --source user`。
 - `parse` 不覆盖已有译文的 cache（`--force` 先备份再覆盖）；一段都没解析出来时报错退出、不落盘。
@@ -346,7 +347,7 @@ glossary.locked.json # 锁定词汇表 {characters, terms, non_translate}
 
 ### `audit` 与 `glossary lint` —— 机械体检
 
-`audit` 与写回闸门是同一套检查。硬伤：`empty`、`tag_mismatch`、`token_mismatch`。风格警告：`identical_untranslated`、`markup_leak`、`halfwidth_punct`、`halfwidth_period`、`cjk_corner_quote`、`ascii_ellipsis`、`single_dash`、`inner_space`、`odd_ascii_quotes`、`too_short` / `too_long`（长度比，抓漏译与注水），以及 `decisions.json` 里的本书 lint 规则。CJK 相关检查只对含 CJK 的译文生效。`glossary lint` 查表本身：alias 带头衔、两人共用 alias、同姓角色、缺 `render` 等。
+`audit` 与写回闸门是同一套检查。硬伤：`empty`、`tag_mismatch`（`<i>`/`<b>` 数量与源文不符，或标记反序 / 彼此交叉 / 与 `⟦n⟧…⟦/n⟧` 交叉——后者导出即坏 XHTML，标记例外也不放行）、`token_mismatch`。风格警告：`identical_untranslated`、`markup_leak`、`halfwidth_punct`、`halfwidth_period`、`cjk_corner_quote`、`ascii_ellipsis`、`single_dash`、`inner_space`、`odd_ascii_quotes`、`too_short` / `too_long`（长度比，抓漏译与注水），以及 `decisions.json` 里的本书 lint 规则。CJK 相关检查只对含 CJK 的译文生效。`glossary lint` 查表本身：alias 带头衔、两人共用 alias、同姓角色、缺 `render` 等。
 
 **推荐闭环**：`verify` → `audit` → `glossary lint` → `scan --mode all` → **把确认的真名补进词汇表** → 再 `verify`（表全了，才守得住）。
 
@@ -361,7 +362,7 @@ glossary.locked.json # 锁定词汇表 {characters, terms, non_translate}
 | Challenger | 奖励否决：原译没错 / 违反红线 / 引入新错 / 纯偏好 → reject | `verdicts_X.jsonl` |
 | Consistency auditor | 只读术语清单，判同一原文词该不该一个译法 | `findings_D.jsonl` |
 
-主控只跑机械半边：`batch split --stage review` 切组 → `review rules`（每组的词汇表/裁定切片）→ `blind` / `hints` → Reviewer 写完跑只读的 `review check` 自检 → `review pre` 闸门（`offending` 在现译中恰好一次、红线改动即拒、定稿术语只加不删、标记成对、不动拉丁 token）→ `review segs --mode slim`（A/B 全部送 Challenger，有盲读佐证的 C/D 直接进过目表）→ `review stats` 复核否决率 → `review final`（A/B 进 `apply_X.json` → `batch apply`；C/D 进 `review_ALL.md` 给人勾选 → `review pick`）。第二轮起加 `--run <名>`，各轮文件互不撞名。
+主控只跑机械半边：`batch split --stage review` 切组 → `review rules`（每组的词汇表/裁定切片）→ `blind` / `hints` → Reviewer 写完跑只读的 `review check` 自检 → `review pre` 闸门（字段类型与 `severity` 1/2/3、id 不重复、`offending` 在现译中恰好一次、红线改动即拒、定稿术语只加不删（按出现次数计，词汇表 `a/b` 多译法逐个算）、标记成对、不动拉丁 token；finding 的 `flags` 只认本组盲读文件里**同一段**的 flag，其余清掉）→ `review segs --mode slim`（A/B 全部送 Challenger，有盲读佐证的 C/D 直接进过目表）→ `review stats` 复核否决率 → `review final`（A/B 进 `apply_X.json` → `batch apply`；C/D 进 `review_ALL.md` 给人勾选 → `review pick`）。第二轮起加 `--run <名>`，各轮文件互不撞名。
 
 先在人工校对过的章节上 `review benchmark` + `score` 打分再铺全书（试点书：召回 71–75%、Challenger 精度 87–91%）。协议、红线配置、prompt 模板见 [`adversarial_review.md`](skills/ainiee-translate/references/adversarial_review.md) / [`review_taxonomy.md`](skills/ainiee-translate/references/review_taxonomy.md) / [`review_prompts.md`](skills/ainiee-translate/references/review_prompts.md)。
 

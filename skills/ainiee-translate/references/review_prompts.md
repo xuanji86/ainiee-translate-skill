@@ -58,7 +58,7 @@ Blind Reader 是用户发现问题的方式（在阅读器里当读者读）；R
 > - `proposed`：替换 `offending` 的子串。**范围按病因定**：用词问题改词；句式问题（重心后置、定语堆叠、名词化、英文语序、对白不像人话）**把整句作为 offending 重写**——按中文作者的口吻重新组织，不要在原句骨架上修修补补。整段重写仍不允许；一句之内人名、`<i>/<b>`、英文 token 必须原样保留，意思不增不减（机械闸门会拦下长度变化超过一倍或缩到一半以下的重写）；不得增删 `<i>` `</i>` `<b>` `</b>`；不得改动任何拉丁字母（人名、舰名、术语原文）——除非是 A 类补回漏译的专名，此时加 `"latin_change":true`
 > - `source_evidence`：源文对应子串（A/C 必填）；`severity` 3=意思错或读不通 / 2=明显别扭 / 1=可改可不改；`confidence` 0–1
 > - `category` ∈ A/B/C。触碰红线的不要写——写了也会被作废
-> - 由 Blind Reader flag 引出的 finding 加 `"flags":["{N}-b001"]`，Challenger 据此知道这里有读者绊过（**别漏标、别乱标**：`review segs` 靠它决定哪些 C 类免复核，漏标只会多花 Challenger，乱标会让坏改动免审）
+> - 由 Blind Reader flag 引出的 finding 加 `"flags":["{N}-b001"]`，Challenger 据此知道这里有读者绊过（**别漏标、别乱标**：`review segs` 靠它决定哪些 C 类免复核，漏标只会多花 Challenger；只能标**本段**的 flag——不存在或属于别段的 flag，`review check` 报错、`review pre` 直接清掉）
 > - 要改红线里标了 `waivable` 的写法（典型：源文军衔与现译不符），加 `"redline_waiver":"源文依据"`；这种条目一定会送 Challenger
 >
 > 第 5 步 产出：**不要写 builder 脚本**。用 Write 直接把 JSONL 写到 `{OUT}`（UTF-8，中文不转义，id 从 `{N}-001` 连续编号），然后跑只读检查 `{PFX} -m ainiee_translate.review check {PROJ}/work/cache.json {N}`（字段、类别、C 类 sev1、A/C 的 `source_evidence`、flag id、`offending` 恰好一次、红线/定稿/禁字、标记与拉丁 token——与主控闸门同一套规则）。有报错只改那几行（修正或删掉）再跑，直到输出 `OK`。
