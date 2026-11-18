@@ -1,3 +1,4 @@
+import itertools
 import re
 from pathlib import Path
 
@@ -270,8 +271,8 @@ class EpubReader(BaseSourceReader):
         
         return items
 
-    def _extract_balanced_tag(self, html_string: str, tag_name: str, start_pos: int = 0):
-        """从 html_string 中提取完整的平衡标签，正确处理同名嵌套。
+    def _extract_balanced_tag(self, html_string: str, tag_name: str, start_pos: int = 0, nth: int = 0):
+        """从 html_string 中提取完整的平衡标签，正确处理同名嵌套。nth：取第几个（从 0 起）同名开标签。
 
         与非贪婪正则不同，此方法通过跟踪嵌套深度来找到正确的闭合标签。
         例如对于 <span><span>text</span></span>，能正确匹配完整的外层标签，
@@ -286,7 +287,7 @@ class EpubReader(BaseSourceReader):
             re.IGNORECASE
         )
 
-        open_match = open_pattern.search(html_string, start_pos)
+        open_match = next(itertools.islice(open_pattern.finditer(html_string, start_pos), nth, None), None)
         if not open_match:
             return None
 
@@ -377,7 +378,11 @@ class EpubReader(BaseSourceReader):
             return tag_name, original_html
 
         # 否则，使用平衡标签提取找到正确的内层标签（正确处理同名嵌套）
-        balanced_tag = self._extract_balanced_tag(original_html, tag_name)
+        # 取"包住 current_tag 的第一个同名标签"，不是文档里第一个同名标签：
+        # <p><a id="e1"></a><a href>T</a></p> 里第一个 <a> 是前面的空锚点，取它整段会被当成空文本丢掉
+        nth = next(i for i, t in enumerate(soup.find_all(tag_name))
+                   if t is current_tag or any(p is t for p in current_tag.parents))
+        balanced_tag = self._extract_balanced_tag(original_html, tag_name, nth=nth)
         if balanced_tag:
             return tag_name, balanced_tag
         else:
