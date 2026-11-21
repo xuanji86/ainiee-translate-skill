@@ -5,7 +5,7 @@
 **Agent 原生的长篇翻译管线** —— 让编码 agent 本身当翻译引擎，端到端译完一本书。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.17.3-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
+[![Version](https://img.shields.io/badge/version-1.18.0-green.svg)](https://github.com/xuanji86/ainiee-translate-skill/releases)
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue.svg)](pyproject.toml)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://claude.com/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-compatible-333.svg)](skills/ainiee-translate/references/codex-tools.md)
@@ -251,7 +251,7 @@ progress    [cache] [--par D] [--stall 秒] [--watch|--once|--line|--json|--serv
             [--open] [--out F] [--interval 秒]
 review      （除 dual-merge 外都接受 [--dir DIR] [--run RUN]）
             rules <cache> GROUP… [--locked L] [--examples MD…]
-            blind <cache> GROUP…  |  hints <cache> FLAGS_JSONL…
+            blind <cache> GROUP…  |  hints <cache> FLAGS_JSONL…  |  coverage <cache> GROUP…
             check <cache> GROUP… [--file F]
             pre <cache> FINDINGS_JSONL…
             segs <cache> FINDINGS_PRE_JSONL… [--mode all|tier|slim] [--tier] [--min-sev N] [--sample F]
@@ -362,7 +362,7 @@ glossary.locked.json # 锁定词汇表 {characters, terms, non_translate}
 | Challenger | 奖励否决：原译没错 / 违反红线 / 引入新错 / 纯偏好 → reject | `verdicts_X.jsonl` |
 | Consistency auditor | 只读术语清单，判同一原文词该不该一个译法 | `findings_D.jsonl` |
 
-主控只跑机械半边：`batch split --stage review` 切组 → `review rules`（每组的词汇表/裁定切片）→ `blind` / `hints` → Reviewer 写完跑只读的 `review check` 自检 → `review pre` 闸门（字段类型与 `severity` 1/2/3、id 不重复、`offending` 在现译中恰好一次、红线改动即拒、定稿术语只加不删（按出现次数计，词汇表 `a/b` 多译法逐个算）、标记成对、不动拉丁 token；finding 的 `flags` 只认本组盲读文件里**同一段**的 flag，其余清掉）→ `review segs --mode slim`（A/B 全部送 Challenger，有盲读佐证的 C/D 直接进过目表）→ `review stats` 复核否决率 → `review final`（A/B 进 `apply_X.json` → `batch apply`；C/D 进 `review_ALL.md` 给人勾选 → `review pick`）。第二轮起加 `--run <名>`，各轮文件互不撞名。
+主控只跑机械半边：`batch split --stage review` 切组 → `review rules`（每组的词汇表/裁定切片）→ `blind` / `hints` → `coverage --todo` / `coverage`（逐段对读台账：每段都要有 ok 或问题结论，引文原样；第二轮起只读改过的段）→ Reviewer 写完跑只读的 `review check` 自检 → `review pre` 闸门（字段类型与 `severity` 1/2/3、id 不重复、`offending` 在现译中恰好一次、红线改动即拒、定稿术语只加不删（按出现次数计，词汇表 `a/b` 多译法逐个算）、标记成对、不动拉丁 token；finding 的 `flags` 只认本组盲读文件里**同一段**的 flag，其余清掉）→ `review segs --mode slim`（A/B 全部送 Challenger，有盲读佐证的 C/D 直接进过目表）→ `review stats` 复核否决率 → `review final`（A/B 进 `apply_X.json` → `batch apply`；C/D 进 `review_ALL.md` 给人勾选 → `review pick`）。第二轮起加 `--run <名>`，各轮文件互不撞名。
 
 先在人工校对过的章节上 `review benchmark` + `score` 打分再铺全书（试点书：召回 71–75%、Challenger 精度 87–91%）。协议、红线配置、prompt 模板见 [`adversarial_review.md`](skills/ainiee-translate/references/adversarial_review.md) / [`review_taxonomy.md`](skills/ainiee-translate/references/review_taxonomy.md) / [`review_prompts.md`](skills/ainiee-translate/references/review_prompts.md)。
 

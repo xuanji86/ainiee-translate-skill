@@ -9,6 +9,7 @@ ch2–5 仍抓出 ~80 段问题——几乎全是词法/搭配层（非词、固
 | 角色 | 模型 | 读 | 写 | 激励 |
 |---|---|---|---|---|
 | **Blind Reader** | Opus | **只读中文**（`groups/blind_X.json`）+ 分类清单 + `EXAMPLES.md` + 红线 | `flags_X.jsonl` | **奖励召回**：读者读着绊一下就标；不看原文，不必给改法 |
+| **Pair Reader** | Opus | 本组源文+现译、`rules_X.json`、前几段语境 | `read_X.jsonl`（**每段一行**结论，`review coverage` 自检） | 只管漏译／增译／误译，不碰文风；每段都得交 ok 或 issue，引文必须原样——「漏译 0」由台账证明 |
 | **Reviewer** | Opus | 本组源文+现译、`hints_X.json`（盲读标记+源文）、分类清单、`EXAMPLES.md`、红线/风格指南、前几段语境 | `findings_X.jsonl`（直接写，`review check` 自检） | **奖励召回**：每条 flag 对照源文判断；A/B 都写、C 只写 sev≥2、不写 D；用词病改词，句式病**整句重写**；每条引用源文证据 |
 | **Challenger** | Opus（另一实例） | `challenge_X.jsonl` + 涉及段 + 红线 + `rules_X.json`/`EXAMPLES.md` + 盲读标记 | `verdicts_X.jsonl` | **奖励否决**：违反红线 / 引入新错 → reject；「原译没错」对 A 类总能用，对有 flag 的 B/C 不能用；可 amend |
 | **Consistency auditor** | Opus ×1 | `review inventory` 生成的术语清单 | `findings_D.jsonl` | 只判「同一英文词该不该一个译法」 |
@@ -165,7 +166,11 @@ review/
 # 0.5 盲读：去掉源文，每组一个 Blind Reader（Opus 并发）→ flags_gN.jsonl；校验并挂回源文 → hints_gN.json
 <PFX> -m ainiee_translate.review blind <PROJ>/work/cache.json g1 g2
 <PFX> -m ainiee_translate.review hints <PROJ>/work/cache.json $REV/flags_g1.jsonl $REV/flags_g2.jsonl
-# 1. 每组一个 Reviewer（Opus，滚动派发；读 hints_gN.json；prompt 见 review_prompts.md）；Reviewer 自己跑只读检查到 OK：
+# 0.6 对读台账：先出待读清单 groups/read_gN.json（首轮全组；之后只含没按现文判过 ok 的段，记在 <review 根>/read_ok.json）
+<PFX> -m ainiee_translate.review coverage <PROJ>/work/cache.json g1 g2 --todo
+#     每组一个 Pair Reader（Opus，可与盲读并行；清单为空的组不派）→ read_gN.jsonl；核对每段都有结论、引文原样 → pairs_gN.json + coverage.json
+<PFX> -m ainiee_translate.review coverage <PROJ>/work/cache.json g1 g2        # exit 1 = 有段没交结论或引文对不上
+# 1. 每组一个 Reviewer（Opus，滚动派发；读 hints_gN.json 与 pairs_gN.json；prompt 见 review_prompts.md）；Reviewer 自己跑只读检查到 OK：
 <PFX> -m ainiee_translate.review check <PROJ>/work/cache.json g1          # exit 1 = 有错，逐行列出
 <PFX> -m ainiee_translate.review log <PROJ>/work/cache.json --stage reviewer --group g1 --model claude-opus-5 --agent rev-g1 --file $REV/findings_g1.jsonl
 # 2. 预闸门 + 抽 Challenger 要看的段

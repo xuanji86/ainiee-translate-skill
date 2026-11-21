@@ -9,7 +9,7 @@ Challenger 不看 Reviewer 的推理。都用 Opus（Sonnet 做 Reviewer 召回�
 只拿到 `challenge_{N}.jsonl`。**v1.16 起推荐 `review segs --mode slim`**：A/B 全部送 Challenger（过关即自动写进书里），
 有盲读 flag 的 C 自动放行（反正进过目表），无 flag 的 C 送审；Reviewer 不再写 builder，直接写 JSONL 后跑 `review check`。
 
-**顺序**：Blind Reader（只读中文）→ `review hints` → Reviewer（带源文，把每条 flag 落成改法）→ `review pre` → Challenger → `review final`。
+**顺序**：Blind Reader（只读中文）与 Pair Reader（逐段对读，只管漏/增/错）并行 → `review hints` + `review coverage` → Reviewer（带源文，把每条 flag 和对读问题落成改法）→ `review pre` → Challenger → `review final`。
 Blind Reader 是用户发现问题的方式（在阅读器里当读者读）；Reviewer 对着英文看容易觉得「意思没错」就放过，所以先盲读。
 
 **可选的项目文件**：`{PROJ}/work/POLISH_REDLINES.md`（用户裁定的写法）、`{PROJ}/work/STYLE_GUIDE.md`、`{REV}/EXAMPLES.md`
@@ -35,6 +35,25 @@ Blind Reader 是用户发现问题的方式（在阅读器里当读者读）；R
 >
 > 返回：段数、flag 条数、各 severity 条数、你最拿不准意思的 3 处（段号 + 一句话）。
 
+## Pair Reader（每组一个，逐段对读，与 Blind Reader 并行）
+
+prompt 就这么短：不给规则切片、语境段和背景说明，格式细则由 `review coverage` 的报错来教。输入是 `review coverage --todo` 生成的待读清单：首轮是全组，之后只含改动过或上次有问题的段；清单为空就不派。模型用 Opus（140 段埋 17 处错的对比：Opus 17、Haiku 16、Sonnet 15，漏掉的都是半句漏译；三者 token 量相近）。
+
+> 对读《{BOOK}》第 {N} 组：`{REV}/groups/read_{N}.json` 是 `{"text_index","source_text","translated_text"}` 数组。逐段判断中文和英文说的是不是同一件事，只找三种问题，文风用词不管：
+> - `omission`：英文有的句子、分句或有信息的成分，中文没有
+> - `addition`：中文多出英文没有的内容
+> - `mistranslation`：意思不同（主宾、否定、数字、先后、代词所指、说话人）
+>
+> 合并句子、调整语序不算问题；人名保留英文和 `<i>` `⟦n⟧` 标记是本书规则。
+>
+> 每段写一行到 `{REV}/read_{N}.jsonl`：
+> `{"text_index":1,"verdict":"ok"}`
+> `{"text_index":2,"verdict":"issue","kind":"omission","source_quote":"英文原样子串","note":"一句话"}`
+> addition 改用 `quote`（中文原样子串），mistranslation 两个都要。一段多处问题写多行；拿不准也写 issue。
+>
+> 写完运行，按报错修到输出 OK：`{PFX} -m ainiee_translate.review coverage {PROJ}/work/cache.json {N}`
+> 不改其他文件。返回一行：三种问题各几条。
+
 ## Reviewer（每组一个）
 
 > 你是《{BOOK}》译本的**对抗性审校**，负责第 {N} 组（{RANGE}，{COUNT} 段）。这本书已经译完并润色过，但人工抽查发现润色漏掉了大量问题。**你的职责是找问题，不是改书**——你只产出一份「问题清单」，改不改由别人决定。**奖励召回：漏报比误报严重。**
@@ -46,6 +65,7 @@ Blind Reader 是用户发现问题的方式（在阅读器里当读者读）；R
 > 4. `{PROJ}/work/STYLE_GUIDE.md` —— 格式与固定译法
 > 5. `{CTX}` —— 本组之前的几段（只读，接语境）
 > 6. `{REV}/hints_{N}.json` —— Blind Reader 标出的读着别扭的地方（带源文）。**每一条 flag 都要对照源文判断**，severity 1 的也要看——盲读看着只是「有点别扭」的地方常常是误译露的头（一本试点书里 sev1 flag 引出过 19 条 A 类 sev2 误译）；判断后够门槛（见第 3 步）才写 finding，其余直接跳过，不必逐条说明
+> 7. `{REV}/pairs_{N}.json`（若有）—— Pair Reader 对读出的漏译／增译／误译（带两边原文和引文）。**每一条都要落成 A 类 finding，或在返回里写明为什么不成立**——主控会用 `review coverage` 列出没有任何 finding 的问题段
 >
 > 第 2 步 读输入 `{SRC}`：`{"text_index","source_text","translated_text"}` 数组，{COUNT} 段。`translated_text` 是现行定稿。
 >

@@ -9,6 +9,9 @@ main agent runs between them so that no finding reaches cache.json un-gated:
   blind      target-language-only copy of each group for the Blind Reader -> groups/blind_X.json
   hints      validate the Blind Reader's flags_X.jsonl -> hints_X.json (flagged segments + source)
              for the Reviewer; bad quotes -> rejected_flags_X.jsonl
+  coverage   check the Pair Reader's read_X.jsonl: every segment of the group has a verdict, every
+             quote is verbatim -> pairs_X.json (issues + both texts, for the Reviewer) + coverage.json;
+             --todo: groups/read_X.json, the segments not yet judged ok in their current wording
   pre        mechanical gate on Reviewer findings -> findings_X.pre.jsonl / rejected_X.jsonl
              (also: duplicate ids rejected; `flags` kept only when they are this group's Blind Reader
              flags on the finding's own segment)
@@ -520,6 +523,121 @@ def hints(paths: Paths, files: list[str]) -> list[dict]:
         out.append(row)
         print(f"[{g}] flags={row['flags']} on {row['segments']} segs, rejected={row['rejected']} -> hints_{g}.json")
     return out
+
+
+def _fp(seg: dict) -> str:
+    return hashlib.sha1((seg["source_text"] + "\0" + seg["translated_text"]).encode("utf-8")).hexdigest()[:16]
+
+
+def _read_ok(paths: Paths) -> dict:
+    """<review root>/read_ok.json: {text_index: fingerprint of the source+translation a Pair Reader judged ok}.
+    Shared by every --run, so a later pass only re-reads segments whose text changed since."""
+    p = os.path.join(paths.root, "read_ok.json")
+    if not os.path.exists(p):
+        return {}
+    with open(p, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def read_todo(paths: Paths, groups: list[str]) -> None:
+    """groups/read_X.json: the segments of group X the Pair Reader still has to read (all of them on a
+    first pass; afterwards only those not judged ok in their current wording)."""
+    known = _read_ok(paths)
+    for g in groups:
+        segs = paths.group_src(g)
+        rows = [{k: segs[i][k] for k in ("text_index", "source_text", "translated_text")}
+                for i in sorted(segs) if known.get(str(i)) != _fp(segs[i])]
+        op = os.path.join(paths.groups, f"read_{g}.json")
+        write_json(op, rows)
+        print(f"[{g}] to read={len(rows)} carried={len(segs) - len(rows)} -> {op}")
+
+
+READ_KINDS = {"omission": ("source_quote",), "addition": ("quote",), "mistranslation": ("source_quote", "quote")}
+
+
+def coverage(paths: Paths, groups: list[str]) -> int:
+    """The Pair Reader's ledger read_X.jsonl proves each segment was read against its source: one row
+    {"text_index", "verdict": "ok"} per clean segment, or one row per problem
+    {"text_index", "verdict": "issue", "kind": omission|addition|mistranslation, "note",
+     "source_quote" (verbatim in the source; omission, mistranslation),
+     "quote" (verbatim in the translation; addition, mistranslation)}.
+    A segment with no row, or with both "ok" and an issue, is an error -> exit 1; a segment already
+    judged ok in exactly its current wording (read_ok.json) needs no row and counts as carried. Valid issues go to
+    pairs_X.json for the Reviewer; coverage.json keeps the per-group tally, including issue segments
+    that findings_X.jsonl (once written) does not touch. -> number of errors."""
+    cp = paths.f("coverage.json")
+    report = {}
+    if os.path.exists(cp):
+        with open(cp, encoding="utf-8") as fh:
+            report = json.load(fh)
+    total, done = 0, False
+    known = _read_ok(paths)
+    for g in groups:
+        segs = paths.group_src(g)
+        carried = {i for i in segs if known.get(str(i)) == _fp(segs[i])}
+        rp = paths.f(f"read_{g}.jsonl")
+        errs, ok, per = [], set(), collections.defaultdict(list)
+        lines = open(rp, encoding="utf-8").read().splitlines() if os.path.exists(rp) else []
+        if not lines and carried != set(segs):          # nothing was read: report it, write nothing
+            print(f"no ledger: {rp}\n[{g}] segments={len(segs)} carried={len(carried)} errors=1")
+            total += 1
+            continue
+        for ln, line in enumerate(lines, 1):
+            if not line.strip():
+                continue
+            try:
+                r = json.loads(line)
+            except ValueError as e:
+                errs.append(f"L{ln}: bad JSON ({e})")
+                continue
+            seg = _seg(segs, r.get("text_index")) if isinstance(r, dict) else None
+            if seg is None:
+                errs.append(f"L{ln}: unknown text_index")
+                continue
+            ti, v = int(r["text_index"]), r.get("verdict")
+            if v == "ok":
+                ok.add(ti)
+                continue
+            need = READ_KINDS.get(r.get("kind")) if v == "issue" else None
+            if need is None:
+                errs.append(f"L{ln} [{ti}]: verdict must be ok, or issue with kind {'/'.join(READ_KINDS)}")
+                continue
+            texts = {"source_quote": seg["source_text"], "quote": seg["translated_text"]}
+            bad = [k for k in need if not isinstance(r.get(k), str) or not r[k].strip() or r[k] not in texts[k]]
+            if bad or not r.get("note"):
+                errs.append(f"L{ln} [{ti}]: {r['kind']} needs a note and verbatim {', '.join(bad) or 'quotes'}")
+                continue
+            per[ti].append({k: r[k] for k in ("kind", "source_quote", "quote", "note") if r.get(k)})
+        both = sorted(ok & set(per))
+        missing = sorted(set(segs) - ok - set(per) - carried)
+        for i in ok - set(per):
+            known[str(i)] = _fp(segs[i])
+        for i in per:
+            known.pop(str(i), None)
+        errs += [f"[{i}]: both ok and issue" for i in both]
+        if missing and lines:
+            errs.append(f"{len(missing)} segment(s) without a verdict: {missing[:20]}{' …' if len(missing) > 20 else ''}")
+        write_json(paths.f(f"pairs_{g}.json"),
+                   [{"text_index": i, "source_text": segs[i]["source_text"],
+                     "translated_text": segs[i]["translated_text"], "issues": per[i]} for i in sorted(per)])
+        fp = paths.f(f"findings_{g}.jsonl")
+        touched = {str(f.get("text_index")) for f in read_jsonl(fp) if isinstance(f, dict)} if os.path.exists(fp) else None
+        row = {"segments": len(segs), "ok": len(ok - set(per)), "carried": len(carried - ok - set(per)),
+               "issue_segments": len(per),
+               "issues": sum(len(v) for v in per.values()), "missing": missing, "errors": len(errs)}
+        if touched is not None:
+            row["unanswered"] = [i for i in sorted(per) if str(i) not in touched]
+        report[g] = row
+        done = True
+        total += len(errs)
+        print("\n".join(errs) if errs else "OK")
+        print(f"[{g}] segments={row['segments']} ok={row['ok']} carried={row['carried']} issue_segments={row['issue_segments']} "
+              f"issues={row['issues']} missing={len(missing)} errors={len(errs)}"
+              + (f" unanswered={row['unanswered']}" if row.get("unanswered") else "") + f" -> pairs_{g}.json")
+    if done:
+        write_json(cp, report)
+        write_json(os.path.join(paths.root, "read_ok.json"), known)
+    return total
 
 
 def load_verdicts(paths: Paths, g: str, findings) -> tuple[dict, bool]:
@@ -1197,6 +1315,9 @@ def main(argv=None):
     common(sub.add_parser("stats", help="per-stage yield (flags used, gate/Challenger rejects by tier) -> stats.md"), groups=True)
     common(sub.add_parser("blind", help="target-only copy of groups for the Blind Reader -> groups/blind_X.json"), groups=True)
     common(sub.add_parser("hints", help="validate Blind Reader flags -> hints_X.json for the Reviewer"), files="FLAGS_JSONL")
+    cv = sub.add_parser("coverage", help="Pair Reader ledger read_X.jsonl: every segment has a verdict -> pairs_X.json + coverage.json; exit 1 on gaps")
+    common(cv, groups=True)
+    cv.add_argument("--todo", action="store_true", help="instead: write groups/read_X.json, the segments still to read (not judged ok in their current wording)")
     common(sub.add_parser("final", help="merge verdicts -> apply_X.json (A/B) + review_X.md (C/D)"), groups=True)
     m = sub.add_parser("merge", help="all groups' leftover C/D -> review_ALL.md")
     common(m, groups=True)
@@ -1230,6 +1351,8 @@ def main(argv=None):
     lg.add_argument("--segments", type=int, help="segments it handled")
 
     a = ap.parse_args(argv)
+    if getattr(a, "dir", None) == "" or getattr(a, "run", None) == "":
+        ap.error("--dir / --run is empty (an unset shell variable?): refusing to fall back to the project's own review directory")
     if a.cmd == "dual-merge":
         dual_merge(a.cache, a.files, a.out)
         return 0
@@ -1243,6 +1366,12 @@ def main(argv=None):
     if a.cmd == "import":
         import_findings(paths, a.file, a.group, a.source)
         return 0
+    if a.cmd == "coverage":
+        os.makedirs(paths.groups, exist_ok=True)
+        if a.todo:
+            read_todo(paths, a.groups)
+            return 0
+        return 1 if coverage(paths, a.groups) else 0
     rules = load_rules(paths, getattr(a, "locked", None))
     if a.cmd == "check":   # read-only: before anything below creates directories
         if a.file and len(a.groups) != 1:

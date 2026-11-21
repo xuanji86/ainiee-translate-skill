@@ -544,7 +544,7 @@ $PFX -m ainiee_translate.batch write "$WORK/work/cache.json" "$WORK/work/par"/tr
 
 # 对抗性审核：切组 / 闸门 / 抽段 / 术语清单 / 合并 verdicts / 过目表 / 勾选 / 基准打分 / 留痕（详见 references/adversarial_review.md）
 $PFX -m ainiee_translate.batch split "$WORK/work/cache.json" --stage review --range 438-719 --prefix g --out-dir "$WORK/work/review/groups" --context 3
-$PFX -m ainiee_translate.review rules|blind|hints|check|pre|segs [--mode slim|--tier]|final|merge|pick|inventory|stats|benchmark|score|log|ledger|import "$WORK/work/cache.json" [--run R] …
+$PFX -m ainiee_translate.review rules|blind|hints|coverage|check|pre|segs [--mode slim|--tier]|final|merge|pick|inventory|stats|benchmark|score|log|ledger|import "$WORK/work/cache.json" [--run R] …
 $PFX -m ainiee_translate.review dual-merge "$WORK/work/cache.json" opus_*.jsonl fable_*.jsonl --out fix_input.json
 ```
 
