@@ -6,7 +6,7 @@ context: fork
 ---
 对当前项目 `work/cache.json` 的已译文本做润色（状态 TRANSLATED→POLISHED，可断点续跑）。
 
-前置：`work/polish_prompt.md` 必须存在且非空（由模块提供或 `/ainiee-translate:gen-prompt polish` 生成）；否则告知用户「当前模块无润色提示词」并停止。设好 `AINIEE_PY`/`PYTHONPATH`（`AINIEE_REPO` 仅 PDF/Office 回退才需要）。
+前置：`work/polish_prompt.md` 必须存在且非空（由模块提供或 `/ainiee-translate:gen-prompt polish` 生成）；否则告知用户「当前模块无润色提示词」并停止。
 
 循环直到 `read-translated` 返回 `[]`：
 1. `<PFX> -m ainiee_translate.batch read-translated work/cache.json --size ${1:-100}` → 得到 `{text_index, source_text, translated_text}` 数组。

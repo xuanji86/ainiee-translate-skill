@@ -10,12 +10,13 @@ disable-model-invocation: true
 - `/ainiee-translate:glossary [--config PATH] [--analysis PATH]` —— 构建并锁定词汇表
 - `/ainiee-translate:polish [批大小]` —— 对已译文本跑润色 pass
 - `/ainiee-translate:export <输入文件>` —— 导出成品
-- `/ainiee-translate:verify` —— 校验残留规则违规
+- `/ainiee-translate:verify` —— 校验空译、人名未保留、术语没按词汇表译
 - `/ainiee-translate:audit` —— 机械体检（空译/标记不匹配/半角标点/「」/长度比）
 - `/ainiee-translate:scan [模式]` —— 发现词汇表缺口与幻觉错名
-- `/ainiee-translate:status` —— 查看进度（已绑模块 / 计数 / 续跑点）
+- `/ainiee-translate:status` —— 已绑模块、各状态段数、下一步
 - `/ainiee-translate:progress` —— 进度面板（全书 + 每个并行组 running/stalled/ready/written）
-- `/ainiee-translate:review <起-止段号>` —— 对抗性审核（Reviewer→闸门→Challenger；A/B 自动写回、C/D 过目；去 AI 味 + 抓误译）
+- `/ainiee-translate:review <起-止段号>` —— 对抗性审核（盲读 + 逐段对读台账 → Reviewer → 闸门 → Challenger；A/B 自动写回、C/D 过目）
+- `/ainiee-translate:repair` —— 修复旧解析器遗留的行内标记与粘连词
 
 **模块（不同任务的设置包）**
 - `/ainiee-translate:import-profile <profile.json> <模块名>` —— 导入 AiNiee profile 为模块
