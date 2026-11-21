@@ -173,6 +173,47 @@ def test_blind_and_hints(tmp_path, make_project):
     assert h[0]["source_text"] == "four <i>five</i> six" and h[0]["flags"][0]["id"] == "g1-b001"
 
 
+def test_coverage_needs_a_verdict_for_every_segment(tmp_path, make_project):
+    cache = _project_dir(tmp_path, make_project)
+    paths = review.Paths(cache)
+    os.makedirs(paths.groups)
+    batch.main(["split", cache, "--stage", "review", "--prefix", "g", "--target", "10",
+                "--out-dir", paths.groups, "--context", "0"])
+    segs = paths.group_src("g1")
+    ids = sorted(segs)
+    assert review.coverage(paths, ["g1"]) == 1                                          # no ledger at all:
+    assert not os.path.exists(paths.f("coverage.json")) and not os.path.exists(paths.f("pairs_g1.json"))   # nothing written
+    try:
+        review.main(["coverage", cache, "--dir", "", "g1"])                             # an unset $REV must not hit the real dir
+        raise AssertionError("empty --dir accepted")
+    except SystemExit as e:
+        assert e.code == 2
+    rows = [{"text_index": i, "verdict": "ok"} for i in ids[2:]]
+    rows += [{"text_index": 2, "verdict": "issue", "kind": "omission", "source_quote": "six", "note": "没译"},
+             {"text_index": 2, "verdict": "issue", "kind": "omission", "source_quote": "seven", "note": "原文没有这个词"},
+             {"text_index": 2, "verdict": "issue", "kind": "addition", "note": "缺 quote"},
+             {"text_index": 99, "verdict": "ok"}]
+    review.write_jsonl(paths.f("read_g1.jsonl"), rows)
+    assert review.coverage(paths, ["g1"]) == 4            # invented quote, missing quote, unknown index, segment 1 unread
+    rep = json.load(open(paths.f("coverage.json"), encoding="utf-8"))["g1"]
+    assert rep["missing"] == [ids[0]] and rep["issue_segments"] == 1 and "unanswered" not in rep
+    pairs = json.load(open(paths.f("pairs_g1.json"), encoding="utf-8"))
+    assert [p["text_index"] for p in pairs] == [2] and pairs[0]["issues"][0]["source_quote"] == "six"
+    review.write_jsonl(paths.f("read_g1.jsonl"), rows[:-3] + [{"text_index": ids[0], "verdict": "ok"}])
+    assert review.main(["coverage", cache, "g1"]) == 0
+    review.main(["coverage", cache, "g1", "--todo"])                                    # a later pass: only the
+    todo = json.load(open(os.path.join(paths.groups, "read_g1.json"), encoding="utf-8"))  # segment not judged ok
+    assert [r["text_index"] for r in todo] == [2]
+    keep = review.read_jsonl(paths.f("read_g1.jsonl"))
+    review.write_jsonl(paths.f("read_g1.jsonl"), [r for r in keep if r["text_index"] == 2])
+    assert review.coverage(paths, ["g1"]) == 0                                          # ok rows carried over
+    assert json.load(open(paths.f("coverage.json"), encoding="utf-8"))["g1"]["carried"] == 2
+    review.write_jsonl(paths.f("read_g1.jsonl"), keep)
+    review.write_jsonl(paths.f("findings_g1.jsonl"), [{"id": "g1-001", "text_index": ids[0]}])
+    review.coverage(paths, ["g1"])
+    assert json.load(open(paths.f("coverage.json"), encoding="utf-8"))["g1"]["unanswered"] == [2]
+
+
 def test_redline_waivable_entry():
     r = _rules(redline=[{"re": r"上校|舰长", "waivable": True}, "号"])
     f = _f("Mara 上校这么说的", "Mara 舰长这么说的", cat="D")

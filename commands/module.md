@@ -14,5 +14,3 @@ PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" \
 - `show <名字>` —— 看某模块的元数据 + 术语/角色/禁翻计数
 - `create <名字> [--source-language X --target-language Y --title T]` —— 新建空模块
 - `load <名字> [--work 项目目录]` —— 设为激活；给 `--work` 时把提示词+词汇表拷进该项目 `work/`
-
-注：`module` 子命令为纯文件操作，不需要 `AINIEE_REPO`。

@@ -1,15 +1,13 @@
 ---
 description: 查看模块的提示词与词汇表摘要
 argument-hint: [模块名]
-allowed-tools: Bash, Read
+allowed-tools: Bash
 ---
-显示模块 `$1`（未给则用当前激活模块）的元数据、术语/角色/禁翻计数，以及翻译/润色提示词开头。
+显示模块 `$1`（未给则用当前激活模块）的元数据、术语/角色/禁翻计数，以及两份提示词的开头。
 
 ```bash
-PY="${AINIEE_PY:-python3}"; PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts"
-NAME="$1"; [ -z "$NAME" ] && NAME=$(PYTHONPATH="$PYTHONPATH" $PY -c "import json,os;p=os.path.expanduser(os.environ.get('AINIEE_TRANSLATE_HOME','~/.ainiee-translate')+'/active.json');print(json.load(open(p)).get('active_module','')) if os.path.exists(p) else print('')")
-PYTHONPATH="$PYTHONPATH" $PY -m ainiee_translate.module show "$NAME"
-echo "--- translate_prompt.md ---"; head -8 ~/.ainiee-translate/modules/"$NAME"/translate_prompt.md 2>/dev/null
-P=~/.ainiee-translate/modules/"$NAME"/polish_prompt.md
-echo "--- polish_prompt.md ---";    grep -q '[^[:space:]]' "$P" 2>/dev/null && head -8 "$P" || echo "(无润色提示词)"
+H="${AINIEE_TRANSLATE_HOME:-$HOME/.ainiee-translate}"
+NAME="$1"; NAME="${NAME:-$(sed -n 's/.*"active_module": *"\([^"]*\)".*/\1/p' "$H/active.json" 2>/dev/null)}"
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/skills/ainiee-translate/scripts" "${AINIEE_PY:-python3}" -m ainiee_translate.module show "${NAME:?没有激活模块，请给模块名}"
+head -8 "$H/modules/$NAME/translate_prompt.md" "$H/modules/$NAME/polish_prompt.md" 2>/dev/null
 ```
