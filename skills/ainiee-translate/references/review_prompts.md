@@ -12,14 +12,14 @@ Challenger 不看 Reviewer 的推理。都用 Opus（Sonnet 做 Reviewer 召回�
 **顺序**：Blind Reader（只读中文）与 Pair Reader（逐段对读，只管漏/增/错）并行 → `review hints` + `review coverage` → Reviewer（带源文，把每条 flag 和对读问题落成改法）→ `review pre` → Challenger → `review final`。
 Blind Reader 是用户发现问题的方式（在阅读器里当读者读）；Reviewer 对着英文看容易觉得「意思没错」就放过，所以先盲读。
 
-**可选的项目文件**：`{PROJ}/work/POLISH_REDLINES.md`（用户裁定的写法）、`{PROJ}/work/STYLE_GUIDE.md`、`{REV}/EXAMPLES.md`
+**可选的项目文件**：`{PROJ}/work/POLISH_REDLINES.md`（用户裁定的写法）、`{PROJ}/work/STYLE_GUIDE.md`、`{PROJ}/work/AUTHOR_STYLE.md`（原著作者的文风档案，`module load` 生成）、`{REV}/EXAMPLES.md`
 （本书已校过的病例）。没有就从清单里删掉那行。
 
 ## Blind Reader（每组一个，只读中文，先于 Reviewer）
 
 > 你是《{BOOK}》中译本的**普通中文读者兼文字编辑**，负责第 {N} 组（{RANGE}，{COUNT} 段）。**你看不到英文原文，也不需要**——你要找的是中文读者读到会绊一下、会皱眉、会觉得「这不像中国人写的」的地方。**奖励召回：宁可多标，漏标比误标严重。**
 >
-> 第 1 步 读：`{SKILL}/references/review_taxonomy.md`（重点 B、C 两类与十二条清单）；`{REV}/EXAMPLES.md`（本书用户亲自改过的病例——这就是用户的口味标准，同类写法一律标）；`{PROJ}/work/POLISH_REDLINES.md`（红线写法看着怪也是故意的，**不许标**）。
+> 第 1 步 读：`{SKILL}/references/review_taxonomy.md`（重点 B、C 两类与十二条清单）；`{REV}/EXAMPLES.md`（本书用户亲自改过的病例——这就是用户的口味标准，同类写法一律标）；`{PROJ}/work/POLISH_REDLINES.md`（红线写法看着怪也是故意的，**不许标**）；`{PROJ}/work/AUTHOR_STYLE.md`（原著作者的文风档案：「审校检查点」里列为作者特征的写法，比如一句成段、刻意含糊、只写身体反应，**不许当别扭标**；列为「风格被抹平」的情况照标）。
 >
 > 第 2 步 读 `{REV}/groups/blind_{N}.json`：`context`（前几段，只读接语境）与 `segments`（`{"text_index","translated_text"}`，{COUNT} 段）。
 >
@@ -63,6 +63,7 @@ prompt 就这么短：不给规则切片、语境段和背景说明，格式细�
 > 2. `{REV}/EXAMPLES.md` —— 本书已校过的真实病例（若有）
 > 3. `{PROJ}/work/POLISH_REDLINES.md` —— 用户已裁定的写法，**一个字都不许碰**
 > 4. `{PROJ}/work/STYLE_GUIDE.md` —— 格式与固定译法
+> 4a. `{PROJ}/work/AUTHOR_STYLE.md` —— 原著作者的文风档案。作者特征不是毛病，不要改掉；译文把作者特征抹平了（加了原文没有的情绪词或副词、把刻意的模糊说实、把单独成段的笑点句并进长句、对白标签全成「××地说」等，以档案「审校检查点」为准）算 C 类，按 severity≥2 写，`reason` 注明「抹平作者风格：<档案里哪一条>」
 > 5. `{CTX}` —— 本组之前的几段（只读，接语境）
 > 6. `{REV}/hints_{N}.json` —— Blind Reader 标出的读着别扭的地方（带源文）。**每一条 flag 都要对照源文判断**，severity 1 的也要看——盲读看着只是「有点别扭」的地方常常是误译露的头（一本试点书里 sev1 flag 引出过 19 条 A 类 sev2 误译）；判断后够门槛（见第 3 步）才写 finding，其余直接跳过，不必逐条说明
 > 7. `{REV}/pairs_{N}.json`（若有）—— Pair Reader 对读出的漏译／增译／误译（带两边原文和引文）。**每一条都要落成 A 类 finding，或在返回里写明为什么不成立**——主控会用 `review coverage` 列出没有任何 finding 的问题段
@@ -91,12 +92,13 @@ prompt 就这么短：不给规则切片、语境段和背景说明，格式细�
 
 > 你是《{BOOK}》译本的**否决审**。另一名审校对第 {N} 组提交了一份问题清单，**你的职责是把站不住的条目否掉**。你不知道对方的推理过程，只看结论。**奖励精度：放过一条坏改动比否掉一条好改动严重。**
 >
-> 第 1 步 读：`{PROJ}/work/POLISH_REDLINES.md`（红线，触碰即否）；`{SKILL}/references/review_taxonomy.md`（判断归类对不对、severity 虚不虚）；`{REV}/EXAMPLES.md`（用户亲自裁定的病例）；`{REV}/hints_{N}.json`（Blind Reader 标出的读着别扭的地方）；`{REV}/challenge_{N}.jsonl`（待审 findings，JSONL；每条都要给 verdict）；`{SEGS}`（涉及的段：`{"text_index","source_text","translated_text"}`）。
+> 第 1 步 读：`{PROJ}/work/POLISH_REDLINES.md`（红线，触碰即否）；`{SKILL}/references/review_taxonomy.md`（判断归类对不对、severity 虚不虚）；`{REV}/EXAMPLES.md`（用户亲自裁定的病例）；`{PROJ}/work/AUTHOR_STYLE.md`（若有，原著作者的文风档案）；`{REV}/hints_{N}.json`（Blind Reader 标出的读着别扭的地方）；`{REV}/challenge_{N}.jsonl`（待审 findings，JSONL；每条都要给 verdict）；`{SEGS}`（涉及的段：`{"text_index","source_text","translated_text"}`）。
 >
 > 第 2 步 逐条质疑，**先尝试否决**，四问任中其一即 `reject`：
 > 1. **原译其实没错**——对照源文，现译已准确通顺？对方把「风格偏好」当成了「错误」？
 > 2. **改法违反红线**——`offending` 或 `proposed` 碰了红线任何一条？
 > 3. **改法引入新错**——`proposed` 放回原句：语法通吗？意思变了吗？跟前后句接得上吗？更啰嗦？丢了源文成分？加了源文没有的？
+> 3a. **改法抹掉作者特征**——`{PROJ}/work/AUTHOR_STYLE.md`（若有）列为作者特征的写法（短句单独成段、刻意含糊、只写身体反应、口语化叙述等），`proposed` 把它改没了 → `reject`。
 > 4. **纯风格偏好**——两种说法**对中文读者都一样顺**，对方只是更喜欢自己那种（C 类 severity 1 尤其严查）。
 >
 > **校准（用户实测）**：判「原译没错」的标准是**中文读者读到会不会绊一下**，不是「字面能不能讲通」「属于文学化压缩」「源文也这么写」。用户在阅读器里逐句读过的书，被 Challenger 以「可通／文学化／偏好」否掉的条目（「把清明压暗」「无人可投」「谘议之声」「最稳的赌法」「使他没能」）后来全被用户改了。所以：

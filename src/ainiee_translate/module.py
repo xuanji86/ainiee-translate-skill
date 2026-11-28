@@ -2,17 +2,23 @@
 
 A module is a folder under the modules root (default ~/.ainiee-translate/modules/,
 overridable via $AINIEE_TRANSLATE_HOME) containing module.json + translate_prompt.md
-[+ polish_prompt.md, glossary.locked.json, style.md, examples.json].
+[+ polish_prompt.md, glossary.locked.json, style.md, examples.json, authors/].
 
 `load` copies a module's files into a project's work/ dir under the names the
 rest of the pipeline already consumes (glossary.locked.json, user_prompt.md,
 polish_prompt.md), so the existing linear workflow is unchanged. An empty module file (blank
 prompt, glossary with no entries) never replaces a non-empty project file.
+
+A module may also carry author profiles: authors/index.json lists {slug, names}, authors/<slug>.md
+is the profile. `load` picks the profile whose names match the source epub's dc:creator (or
+--author) and copies it to work/AUTHOR_STYLE.md, which bundles and reviewers then read.
 """
 import argparse
 import json
 import os
+import re
 import shutil
+import zipfile
 import sys
 import time
 
@@ -27,8 +33,10 @@ POLISH_PROMPT = "polish_prompt.md"
 GLOSSARY_LOCKED = "glossary.locked.json"
 STYLE = "style.md"
 EXAMPLES = "examples.json"
+AUTHORS_INDEX = os.path.join("authors", "index.json")
 # Name the translate step consumes inside a project's work/ dir
 WORK_USER_PROMPT = "user_prompt.md"
+WORK_AUTHOR_STYLE = "AUTHOR_STYLE.md"
 
 
 def home() -> str:
@@ -150,7 +158,65 @@ def _copy_in(src: str, dst: str) -> bool:
     return True
 
 
-def load_module(name: str, work: str | None = None) -> dict:
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def epub_creators(path: str) -> list[str]:
+    """dc:creator values of an epub ([] if it is not a readable epub)."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            c = z.read("META-INF/container.xml").decode("utf-8", "ignore")
+            opf = z.read(re.search(r'full-path="([^"]+)"', c).group(1)).decode("utf-8", "ignore")
+    except (OSError, KeyError, AttributeError, zipfile.BadZipFile):
+        return []
+    return [re.sub(r"\s+", " ", t).strip(" ;,") for t in re.findall(r"<dc:creator[^>]*>([^<]+)</dc:creator>", opf)]
+
+
+def _source_epub(work: str) -> str | None:
+    """The epub the project was parsed from (cache.json's input_path), read from the file's head."""
+    try:
+        with open(os.path.join(work, "work", "cache.json"), encoding="utf-8") as f:
+            head = f.read(65536)
+    except OSError:
+        return None
+    m = re.search(r'"input_path"\s*:\s*("(?:[^"\\]|\\.)*")', head)
+    p = os.path.expanduser(json.loads(m.group(1))) if m else ""
+    if p and not os.path.isabs(p):
+        # relative to wherever parse ran: the project dir or one of its ancestors
+        here = os.path.abspath(work)
+        while not os.path.exists(os.path.join(here, p)) and os.path.dirname(here) != here:
+            here = os.path.dirname(here)
+        p = os.path.join(here, p)
+    if os.path.isdir(p):
+        eps = [os.path.join(p, f) for f in os.listdir(p) if f.lower().endswith(".epub")]
+        p = eps[0] if len(eps) == 1 else ""
+    return p if p.lower().endswith(".epub") and os.path.isfile(p) else None
+
+
+def resolve_author(d: str, work: str | None, author: str | None = None):
+    """-> (index entry or None, what it was matched from). None when the module has no authors/."""
+    idx = _read_json(os.path.join(d, AUTHORS_INDEX))
+    if not idx:
+        return None, None
+    entries = idx.get("authors") or []
+    keys = lambda e: {_norm(e["slug"])} | {_norm(n) for n in e.get("names") or []}
+    if author:
+        hit = [e for e in entries if _norm(author) in keys(e)]
+        if not hit:
+            raise FileNotFoundError(f"no author profile matches {author!r}; known: "
+                                    + ", ".join(e["slug"] for e in entries))
+        return hit[0], f"--author {author}"
+    ep = _source_epub(work) if work else None
+    names = epub_creators(ep) if ep else []
+    hit = [e for e in entries if any(_norm(n) in keys(e) for n in names)]
+    if len(hit) > 1:
+        print("warning: several author profiles match " + ", ".join(names) + "; using "
+              + hit[0]["slug"] + " (pass --author to choose)", file=sys.stderr)
+    return (hit[0] if hit else None), ("epub creator: " + ", ".join(names) if names else "no epub creator found")
+
+
+def load_module(name: str, work: str | None = None, author: str | None = None) -> dict:
     d = module_dir(name)
     if not os.path.isdir(d):
         raise FileNotFoundError(f"module not found: {name}")
@@ -168,9 +234,21 @@ def load_module(name: str, work: str | None = None) -> dict:
         for src_name, dst_name in mapping.items():
             if _copy_in(os.path.join(d, src_name), os.path.join(wdir, dst_name)):
                 copied.append(dst_name)
+        entry, why = resolve_author(d, work, author)
+        if entry:
+            if _copy_in(os.path.join(d, "authors", entry["slug"] + ".md"), os.path.join(wdir, WORK_AUTHOR_STYLE)):
+                copied.append(WORK_AUTHOR_STYLE)
+            print(f"author: {entry['slug']} ({why}) -> work/{WORK_AUTHOR_STYLE}", file=sys.stderr)
+        elif why:
+            stale = " (the project's existing AUTHOR_STYLE.md was left as is)" \
+                if os.path.exists(os.path.join(wdir, WORK_AUTHOR_STYLE)) else ""
+            print(f"warning: no author profile matched ({why}){stale}. Pass --author <slug>, or build a profile: "
+                  f"{os.path.join(d, 'authors', 'README.md')}", file=sys.stderr)
         with open(os.path.join(wdir, "active_module.json"), "w", encoding="utf-8") as f:
-            json.dump({"module": name, "module_dir": d,
+            json.dump({"module": name, "module_dir": d, "author": entry["slug"] if entry else None,
                        "loaded_at": time.strftime("%Y-%m-%d %H:%M:%S")}, f, ensure_ascii=False, indent=2)
+        return {"module": name, "module_dir": d, "work": work, "copied": copied,
+                "author": entry["slug"] if entry else None}
     return {"module": name, "module_dir": d, "work": work, "copied": copied}
 
 
@@ -188,6 +266,7 @@ def main(argv=None):
     load = sub.add_parser("load")
     load.add_argument("name")
     load.add_argument("--work", default=None)
+    load.add_argument("--author", default=None, help="author profile slug or name (default: match the source epub's creator)")
     a = ap.parse_args(argv)
     try:
         if a.cmd == "list":
@@ -198,7 +277,7 @@ def main(argv=None):
             d = create_module(a.name, a.source_language, a.target_language, a.title)
             print(f"created module -> {d}")
         elif a.cmd == "load":
-            r = load_module(a.name, a.work)
+            r = load_module(a.name, a.work, a.author)
             print(json.dumps(r, ensure_ascii=False))
     except (FileNotFoundError, OSError) as e:
         ap.error(str(e))
