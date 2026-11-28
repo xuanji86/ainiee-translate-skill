@@ -106,7 +106,7 @@ done
 ### 4. 并发派发 subagent（同一条消息里发多个 Agent 调用；一波 ~5–8 个）
 
 每个 agent 的 prompt 自包含（模板见下）。关键点：
-- 先读：`STYLE_GUIDE.md`、`BOOK_BIBLE.md`（若有）、`par/g_N.json`（本组词汇表）、`user_prompt.md`、`<SKILL>/references/translation_rules.md`、`par/grp_N_ctx.json`。
+- 先读：`STYLE_GUIDE.md`、`BOOK_BIBLE.md`（若有）、`AUTHOR_STYLE.md`（若有；用 bundle 时已并入）、`par/g_N.json`（本组词汇表）、`user_prompt.md`、`<SKILL>/references/translation_rules.md`、`par/grp_N_ctx.json`。
 - 读 `par/grp_N_src.json`，逐段翻译，**1:1**（`text_index` 不变、不合并/拆分/漏译）。
 - **边译边写 JSONL**：每译 30–50 段，用一小段 Python 把这批 `{"text_index", "translated_text"}` 以 `json.dumps(ensure_ascii=False)`
   逐行 **append** 到 `par/trans_N.jsonl`。不要攒到最后写一个大文件——中途出错只丢尾巴，且不存在手写 JSON 转义问题。
@@ -173,7 +173,7 @@ done
 
 > 你是把一本小说从源语言译成目标语言的文学译者，负责第 {N} 组（{RANGE}，{COUNT} 段）。前几章已译好并经用户确认，你的产出必须与既有风格**完全一致**。
 >
-> 第 1 步 先**完整读**：`<PROJ>/work/STYLE_GUIDE.md`、`<PROJ>/work/BOOK_BIBLE.md`（若存在；人物性别/军衔/亲属/舰级以它为准）、`<PROJ>/work/par/g_{N}.json`（本组词汇表，人名/术语唯一真相源）、`<PROJ>/work/user_prompt.md`（项目规则，若有）、`<SKILL>/references/translation_rules.md`、`<PROJ>/work/par/grp_{N}_ctx.json`（紧接在你这组之前的 20 段原文与译文，只读，用来接住语境和风格）。
+> 第 1 步 先**完整读**：`<PROJ>/work/STYLE_GUIDE.md`、`<PROJ>/work/BOOK_BIBLE.md`（若存在；人物性别/军衔/亲属/舰级以它为准）、`<PROJ>/work/par/g_{N}.json`（本组词汇表，人名/术语唯一真相源）、`<PROJ>/work/user_prompt.md`（项目规则，若有）、`<PROJ>/work/AUTHOR_STYLE.md`（原著作者的文风档案，若有：句长、对白标签、描写手法照它保住）、`<SKILL>/references/translation_rules.md`、`<PROJ>/work/par/grp_{N}_ctx.json`（紧接在你这组之前的 20 段原文与译文，只读，用来接住语境和风格）。
 >
 > 第 2 步 读输入 `<PROJ>/work/par/grp_{N}_src.json`（`{"text_index","source_text"}` 数组，{COUNT} 段）。
 >

@@ -221,9 +221,11 @@ v1.4.1 及更早版本的 epub 解析用 `soup.get_text(strip=True)` 抽文本�
 - 导入 AiNiee profile 为模块：`<PFX> -m ainiee_translate.profile import --profile <profile.json> --name <名字>`
 - 新建空模块：`<PFX> -m ainiee_translate.module create <名字> [--source-language X --target-language Y]`
 - 列出/查看：`<PFX> -m ainiee_translate.module list` / `show <名字>`
-- 加载进项目：`<PFX> -m ainiee_translate.module load <名字> --work ~/my-project`
+- 加载进项目：`<PFX> -m ainiee_translate.module load <名字> --work ~/my-project [--author <slug>]`
 
-加载只是把模块的 `translate_prompt.md`→`work/user_prompt.md`、`polish_prompt.md`、`glossary.locked.json` 拷进项目 `work/`——即后续步骤本就在读的文件（模块里空白的提示词、没有条目的词汇表不覆盖项目里已有的非空文件；模块词汇表比项目表少条目时照常覆盖并备份，打印少了几条）。**不用模块的项目，流程与下文完全一致。** 此外 `prompt.py` 还能从 AiNiee 配置/profile 提取所选系统提示词（`--translate-system`）与润色提示词（`--polish`）。命令行入口见附录 C。
+加载只是把模块的 `translate_prompt.md`→`work/user_prompt.md`、`polish_prompt.md`、`glossary.locked.json` 拷进项目 `work/`——即后续步骤本就在读的文件（模块里空白的提示词、没有条目的词汇表不覆盖项目里已有的非空文件；模块词汇表比项目表少条目时照常覆盖并备份，打印少了几条）。**不用模块的项目，流程与下文完全一致。**
+
+**作者档案**：模块若带 `authors/`（`index.json` 登记作者名，`<slug>.md` 是档案），加载时按原书 epub 的作者名（`cache.json` 的 `input_path` → dc:creator）匹配档案，拷成 `work/AUTHOR_STYLE.md`，打印 `author: <slug>`；所以**先 parse 再 load**。匹配不到会打印警告：已有档案的用 `--author <slug>` 指定，新作者按模块 `authors/README.md` 建档后再 load。档案管文风（句长、对白标签、描写手法、该保留什么），不管口径；与 `user_prompt.md`、锁定表冲突时以后者为准。并行 bundle 自动带上它；串行翻译、润色、对抗性审核的各角色都读它。 此外 `prompt.py` 还能从 AiNiee 配置/profile 提取所选系统提示词（`--translate-system`）与润色提示词（`--polish`）。命令行入口见附录 C。
 
 ---
 
@@ -284,6 +286,7 @@ v1.4.1 及更早版本的 epub 解析用 `soup.get_text(strip=True)` 抽文本�
 
 1. **通用规则**见 `references/translation_rules.md`（AiNiee 原生：逐行对应、保留标记、忠实准确）。
 2. **项目规则**（人名保留、头衔摆放、风格等）见用户自定义提示词（步骤 3+，由用户自己写，不写死在技能里）。
+   `work/AUTHOR_STYLE.md`（若有，模块加载时按原书作者生成）：动笔前读一遍，译文要保住原著作者的文风。
 3. **人名/术语** 以锁定表（术语表/角色表）为唯一真相源；`render` 为英文则保留原文。
 4. 遇到锁定表外的新实体：模式 A/B 停下询问用户；模式 C 用锁定表最近匹配或保留原文，并记入待审列表。
 
@@ -367,7 +370,7 @@ agent 的最终消息只回段数、新词数和 ≤5 条拿不准的。并行 a
 
 循环直到 `batch read-translated` 返回 `[]`：
 1. `<PFX> -m ainiee_translate.batch read-translated work/cache.json --size 100` → `{text_index, source_text, translated_text}` 数组。
-2. agent 按 `work/polish_prompt.md` + 锁定词汇表润色每段（**逐行 1:1、保留标记、人名/术语依词汇表**），写 `work/polished_NNN.json`（`{text_index, polished_text}`）。
+2. agent 按 `work/polish_prompt.md` + 锁定词汇表 + `work/AUTHOR_STYLE.md`（若有；润色不能把作者特征改没）润色每段（**逐行 1:1、保留标记、人名/术语依词汇表**），写 `work/polished_NNN.json`（`{text_index, polished_text}`）。
 3. `<PFX> -m ainiee_translate.polish write work/cache.json work/polished_NNN.json`（写回并置 POLISHED；同样过闸门，接受多文件与 JSONL）。
 
 **润色也能并行**（大书）：`batch split --stage polish --out-dir work/par` 把已译段按章切组，组文件带 `translated_text`；每个 subagent 边润边 append `par/polished_N.jsonl`（`{text_index, polished_text}`）；`batch validate grp_N_src.json polished_N.jsonl` 验收；`polish write work/cache.json work/par/polished_*.jsonl` 一次写回。`progress` 读到 `par/_stage.json` 里的 `polish` 会显示翻译/润色两条进度条，组状态 `written` = 全部已置 POLISHED。

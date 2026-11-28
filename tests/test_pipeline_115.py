@@ -249,6 +249,16 @@ def test_bundle_has_card_glossary_and_rows(tmp_path, make_project):
     assert "trans_h1.jsonl" in txt and '"text_index": 1' in txt
 
 
+def test_bundle_carries_author_style_once(tmp_path, make_project):
+    p = _save(tmp_path, make_project(sources=["The airship hummed."]))
+    (tmp_path / "AUTHOR_STYLE.md").write_text("短句，笑点单独成段。", encoding="utf-8")
+    src = tmp_path / "grp_h1_src.json"
+    src.write_text(json.dumps([{"text_index": 1, "source_text": "The airship hummed."}]), encoding="utf-8")
+    batch.main(["bundle", p, str(src), "--include", str(tmp_path / "AUTHOR_STYLE.md")])   # also passed by hand
+    txt = (tmp_path / "bundle_h1.md").read_text(encoding="utf-8")
+    assert txt.count("## AUTHOR_STYLE.md") == 1 and "笑点单独成段" in txt
+
+
 # --------------------------------------------------------- finalize ----
 def test_finalize_sets_metadata_fixed_identifier_and_checks_paragraphs(tmp_path, make_project):
     from zipfile import ZipFile

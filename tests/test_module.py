@@ -93,3 +93,78 @@ def test_load_smaller_glossary_warns_and_still_replaces(home, tmp_path, capsys):
     assert json.loads((wdir / "glossary.locked.json").read_text(encoding="utf-8"))["terms"][0]["dst"] == "飞艇"
     assert len(list(wdir.glob("glossary.locked.json.bak.*"))) == 1
     assert [m["has_polish"] for m in module.list_modules()] == [True]
+
+
+# ------------------------------------------------------- author profiles ----
+def _epub(path, creators):
+    import zipfile
+    meta = "".join(f"<dc:creator>{c}</dc:creator>" for c in creators)
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("META-INF/container.xml", '<container><rootfiles><rootfile full-path="OEBPS/c.opf"/></rootfiles></container>')
+        z.writestr("OEBPS/c.opf", f'<package><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">{meta}</metadata></package>')
+    return str(path)
+
+
+def _author_module(name="st"):
+    d = module.create_module(name)
+    os.makedirs(os.path.join(d, "authors"))
+    _write(os.path.join(d, "authors", "index.json"), json.dumps({"authors": [
+        {"slug": "sd-perry", "names": ["S. D. Perry"]},
+        {"slug": "martin-mangels", "names": ["Michael A. Martin", "Andy Mangels"]}]}))
+    _write(os.path.join(d, "authors", "sd-perry.md"), "PERRY")
+    _write(os.path.join(d, "authors", "martin-mangels.md"), "M&M")
+    return d
+
+
+def _project(tmp_path, epub):
+    wdir = tmp_path / "proj" / "work"
+    wdir.mkdir(parents=True)
+    (wdir / "cache.json").write_text(json.dumps({"project_id": "x", "input_path": epub, "files": {}}), encoding="utf-8")
+    return tmp_path / "proj"
+
+
+def test_load_picks_author_from_epub_creator(home, tmp_path, capsys):
+    _author_module()
+    proj = _project(tmp_path, _epub(tmp_path / "b.epub", ["S.D. Perry"]))   # spacing/punctuation differ from index
+    r = module.load_module("st", str(proj))
+    assert r["author"] == "sd-perry"
+    assert (proj / "work" / "AUTHOR_STYLE.md").read_text(encoding="utf-8") == "PERRY"
+    assert json.loads((proj / "work" / "active_module.json").read_text(encoding="utf-8"))["author"] == "sd-perry"
+    assert "author: sd-perry (epub creator: S.D. Perry)" in capsys.readouterr().err
+
+
+def test_load_matches_any_coauthor_and_flag_overrides(home, tmp_path):
+    _author_module()
+    proj = _project(tmp_path, _epub(tmp_path / "b.epub", ["Andy Mangels"]))
+    assert module.load_module("st", str(proj))["author"] == "martin-mangels"
+    assert module.load_module("st", str(proj), author="sd-perry")["author"] == "sd-perry"
+    assert (proj / "work" / "AUTHOR_STYLE.md").read_text(encoding="utf-8") == "PERRY"
+    with pytest.raises(FileNotFoundError):
+        module.load_module("st", str(proj), author="Nobody")
+
+
+def test_load_unknown_author_warns_and_copies_nothing(home, tmp_path, capsys):
+    _author_module()
+    proj = _project(tmp_path, _epub(tmp_path / "b.epub", ["Kirsten Beyer"]))
+    r = module.load_module("st", str(proj))
+    assert r["author"] is None and not (proj / "work" / "AUTHOR_STYLE.md").exists()
+    err = capsys.readouterr().err
+    assert "no author profile matched (epub creator: Kirsten Beyer)" in err and "authors/README.md" in err
+
+
+def test_module_without_authors_says_nothing(home, tmp_path, capsys):
+    module.create_module("plain")
+    proj = _project(tmp_path, _epub(tmp_path / "b.epub", ["S. D. Perry"]))
+    module.load_module("plain", str(proj))
+    assert "author" not in capsys.readouterr().err
+    assert not (proj / "work" / "AUTHOR_STYLE.md").exists()
+
+
+def test_load_resolves_relative_input_path_from_an_ancestor(home, tmp_path):
+    _author_module()
+    (tmp_path / "ENG").mkdir()
+    _epub(tmp_path / "ENG" / "b.epub", ["Michael A. Martin", "Andy Mangels"])
+    wdir = tmp_path / "books" / "t1" / "work"
+    wdir.mkdir(parents=True)
+    (wdir / "cache.json").write_text(json.dumps({"input_path": "ENG/b.epub"}), encoding="utf-8")   # parsed from tmp_path
+    assert module.load_module("st", str(tmp_path / "books" / "t1"))["author"] == "martin-mangels"

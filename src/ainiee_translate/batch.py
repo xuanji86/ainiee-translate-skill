@@ -383,6 +383,10 @@ def make_bundle(cache_path: str, src_json: str, out_md: str, *, stage: str = "tr
     c = state.card(cache_path, min(idx), max(idx))
     if c:
         parts += [c]
+    # the author profile `module load` put beside the cache rides along in every bundle
+    auto = os.path.join(os.path.dirname(os.path.abspath(cache_path)), "AUTHOR_STYLE.md")
+    if os.path.exists(auto) and all(os.path.realpath(p) != os.path.realpath(auto) for p in includes):
+        includes = [*includes, auto]
     for p in includes:
         with open(p, encoding="utf-8") as f:
             parts += [f"## {os.path.basename(p)}", f.read().strip(), ""]
